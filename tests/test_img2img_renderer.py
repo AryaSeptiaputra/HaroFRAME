@@ -94,3 +94,18 @@ def test_render_strength_override_takes_precedence(mocker):
 	renderer.render(warped, reference=reference, prompt="p", negative_prompt="", seed=1, frame_index=0, strength=0.9)
 
 	assert fake_pipeline.call_kwargs["strength"] == 0.9
+
+
+def test_render_loads_lora_manager_once_when_provided(mocker):
+	fake_pipeline = _FakePipeline()
+	mocker.patch("diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained", return_value=fake_pipeline)
+	identity_engine = _FakeIdentityEngine()
+	lora_manager = mocker.Mock()
+	renderer = Img2ImgFrameRenderer(identity_engine, IdentityConfig(device="cpu"), RenderConfig(), lora_manager)
+	warped = Image.new("RGB", (8, 8))
+	reference = _reference()
+
+	renderer.render(warped, reference=reference, prompt="p", negative_prompt="", seed=1, frame_index=0)
+	renderer.render(warped, reference=reference, prompt="p", negative_prompt="", seed=1, frame_index=1)
+
+	lora_manager.load.assert_called_once_with(fake_pipeline)
