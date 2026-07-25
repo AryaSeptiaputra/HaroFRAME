@@ -1,0 +1,37 @@
+# Local Docker Desktop convenience wrapper around the root Dockerfile -- NOT
+# how vast.ai itself is configured (vast.ai takes a plain image via its own
+# UI, not a compose file; see VASTAI.md for that flow). Useful here for:
+# reproducible local testing on a machine with a GPU, and for documenting the
+# volume mounts / env vars in one runnable place.
+#
+# First-time setup:
+#   cp .env.example .env   # then fill in real values, .env is gitignored
+#
+# Run:
+#   docker compose up -d
+#   docker compose exec haroframe python scripts/test_real_images.py --prompt "..."
+#   docker compose down
+
+services:
+  haroframe:
+    build: .
+    image: haroframe:latest
+    env_file:
+      - .env
+    volumes:
+      # Reference photos you provide (gitignored) and generated videos --
+      # bind-mounted so both live on the host, not baked into the image/container.
+      - ./test_images:/workspace/test_images
+      - ./outputs:/workspace/outputs
+      # Persist downloaded model weights across container restarts --
+      # without this, every fresh container re-downloads several GB.
+      - ./.cache:/workspace/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    stdin_open: true
+    tty: true
