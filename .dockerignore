@@ -11,6 +11,6 @@ outputs/
 
 # Real reference photos -- never bake these into an image that might get
 # pushed to a registry. Mount them at runtime instead (see docker-compose.yml
-# / VASTAI.md).
+# / VAST_GUIDE.md).
 test_images/*
 !test_images/README.md

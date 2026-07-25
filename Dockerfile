@@ -4,7 +4,7 @@
 #   docker build -t <registry-user>/haroframe:latest .
 #   docker push <registry-user>/haroframe:latest
 #
-# Panduan lengkap step-by-step: lihat VASTAI.md di root repo.
+# Panduan lengkap step-by-step: lihat VAST_GUIDE.md di root repo.
 #
 # Di vast.ai: buat instance baru, isi field "Image Path/Tag" dengan
 # <registry-user>/haroframe:latest, pilih instance dengan GPU + driver yang
@@ -25,7 +25,7 @@
 #     -v $(pwd)/outputs:/workspace/outputs \
 #     <registry-user>/haroframe:latest
 # (atau pakai docker-compose.yml yang sudah menyiapkan mount ini -- lihat
-# VASTAI.md untuk cara membawa mount yang sama ke instance vast.ai.)
+# VAST_GUIDE.md untuk cara membawa mount yang sama ke instance vast.ai.)
 #
 # Env var yang perlu di-set di UI vast.ai saat create instance (lihat
 # app/core/config.py -- Settings pakai prefix HAROFRAME_, nested delimiter __):

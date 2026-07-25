@@ -2,7 +2,7 @@
 a video -- a tanya-jawab wrapper around the same pipeline generate_video.py
 uses, for when you want to try several LoRA combinations without editing .env
 each time. Needs real model weights and a GPU -- run this on vast.ai (see
-VASTAI.md), not on the local dev machine.
+VAST_GUIDE.md), not on the local dev machine.
 
 LoRA choices made here are for this run only -- they are not written back to
 .env. Motion mode and which face adapter (IP-Adapter/InstantID) is active are
