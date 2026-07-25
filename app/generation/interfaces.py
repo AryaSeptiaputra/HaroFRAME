@@ -107,6 +107,7 @@ class FrameRenderer(Protocol):
 		prompt: str,
 		negative_prompt: str,
 		seed: int,
+		frame_index: int,
 		strength: float | None = None,
 	) -> RenderedFrame:
 		...
