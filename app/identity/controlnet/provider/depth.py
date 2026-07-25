@@ -5,6 +5,7 @@ from typing import Any
 from PIL import Image
 
 from app.core.config import ControlNetConfig
+from app.identity.controlnet.depth_estimator import DepthEstimator
 from app.identity.exceptions import ModelLoadError
 from app.identity.interfaces import StructureHint
 
@@ -17,26 +18,8 @@ class DepthConditioner:
 
 	def __init__(self, config: ControlNetConfig) -> None:
 		self._config = config
-		self._estimator = None
+		self._depth_estimator = DepthEstimator(config.depth_estimator)
 		self._controlnet = None
-
-	def _ensure_estimator(self):
-		if self._estimator is not None:
-			return self._estimator
-		try:
-			if self._config.depth_estimator == "midas":
-				from controlnet_aux import MidasDetector
-
-				midas = MidasDetector.from_pretrained("lllyasviel/ControlNet")
-				self._estimator = midas
-			else:
-				from transformers import pipeline as hf_pipeline
-
-				depth_pipe = hf_pipeline("depth-estimation", model="Intel/zoedepth-nyu-kitti")
-				self._estimator = lambda image: depth_pipe(image)["depth"]
-		except ImportError as exc:
-			raise ModelLoadError("no depth estimation backend is installed") from exc
-		return self._estimator
 
 	def _ensure_controlnet(self):
 		if self._controlnet is not None:
@@ -49,8 +32,7 @@ class DepthConditioner:
 		return self._controlnet
 
 	def preprocess(self, image: Image.Image) -> Image.Image:
-		estimator = self._ensure_estimator()
-		return estimator(image)
+		return self._depth_estimator.estimate(image)
 
 	def build_control(self, hint: StructureHint) -> dict[str, Any]:
 		if hint.depth_image is None:

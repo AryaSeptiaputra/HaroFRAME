@@ -5,6 +5,7 @@ from PIL import Image
 
 from app.generation.exceptions import MotionPlanError
 from app.generation.interfaces import CameraMotionSpec
+from app.generation.motion.depth_parallax import DepthParallaxPlanner
 from app.generation.motion.factory import build_motion_planner
 from app.generation.motion.ken_burns import KenBurns2DPlanner
 from app.generation.motion.static import StaticMotionPlanner
@@ -138,7 +139,14 @@ class TestAffineFrameWarper:
 
 
 class TestBuildMotionPlanner:
-	@pytest.mark.parametrize("mode,expected_type", [("static", StaticMotionPlanner), ("ken_burns_2d", KenBurns2DPlanner)])
+	@pytest.mark.parametrize(
+		"mode,expected_type",
+		[
+			("static", StaticMotionPlanner),
+			("ken_burns_2d", KenBurns2DPlanner),
+			("depth_parallax", DepthParallaxPlanner),
+		],
+	)
 	def test_dispatches_known_modes(self, mode, expected_type):
 		from app.core.config import CameraMotionConfig
 
@@ -147,7 +155,27 @@ class TestBuildMotionPlanner:
 		assert isinstance(planner, expected_type)
 
 	def test_unknown_mode_raises(self):
-		from app.core.config import CameraMotionConfig
+		import types
 
 		with pytest.raises(ValueError):
-			build_motion_planner(CameraMotionConfig(mode="depth_parallax"))
+			build_motion_planner(types.SimpleNamespace(mode="totally-unknown-mode"))
+
+
+class TestBuildFrameWarper:
+	def test_depth_parallax_mode_returns_depth_parallax_warper(self):
+		from app.core.config import CameraMotionConfig
+		from app.generation.motion.factory import build_frame_warper
+		from app.generation.motion.parallax_warp import DepthParallaxWarper
+
+		warper = build_frame_warper(CameraMotionConfig(mode="depth_parallax"))
+
+		assert isinstance(warper, DepthParallaxWarper)
+
+	@pytest.mark.parametrize("mode", ["static", "ken_burns_2d"])
+	def test_other_modes_return_affine_warper(self, mode):
+		from app.core.config import CameraMotionConfig
+		from app.generation.motion.factory import build_frame_warper
+
+		warper = build_frame_warper(CameraMotionConfig(mode=mode))
+
+		assert isinstance(warper, AffineFrameWarper)
