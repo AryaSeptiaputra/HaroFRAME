@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.core.config import GenerationConfig, IdentityConfig
 from app.identity.engine import IdentityEngine
+from app.generation.encode.video_writer import ImageioVideoEncoder
 from app.generation.exceptions import NoRendererAvailableError
 from app.generation.interfaces import FrameRenderer
 from app.generation.motion.factory import build_motion_planner
@@ -34,4 +35,5 @@ def build_generation_pipeline(
 		build_motion_planner(generation_config.motion),
 		AffineFrameWarper(),
 		_build_frame_renderer(identity_engine, identity_config, generation_config),
+		video_encoder=ImageioVideoEncoder(codec=generation_config.output.codec),
 	)
