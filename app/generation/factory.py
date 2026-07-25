@@ -8,8 +8,7 @@ from app.generation.exceptions import NoRendererAvailableError
 from app.generation.interfaces import FrameRenderer
 from app.generation.lora.interfaces import LoraManager
 from app.generation.lora.manager import PeftLoraManager
-from app.generation.motion.factory import build_motion_planner
-from app.generation.motion.warp import AffineFrameWarper
+from app.generation.motion.factory import build_frame_warper, build_motion_planner
 from app.generation.pipeline import GenerationPipeline
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
@@ -46,7 +45,7 @@ def build_generation_pipeline(
 	return GenerationPipeline(
 		identity_engine,
 		build_motion_planner(generation_config.motion),
-		AffineFrameWarper(),
+		build_frame_warper(generation_config.motion),
 		_build_frame_renderer(identity_engine, identity_config, generation_config, lora_manager),
 		temporal_smoother=build_temporal_smoother(generation_config.temporal),
 		video_encoder=ImageioVideoEncoder(codec=generation_config.output.codec),
