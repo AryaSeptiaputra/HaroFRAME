@@ -4,7 +4,7 @@ Scans a directory (default: test_images/) for image files (.jpg/.jpeg/.png),
 optionally paired with a same-named .txt file containing a per-image prompt,
 and runs each through the full identity + generation pipeline, saving a real
 video file per image. Needs actual model weights and a GPU -- run this on
-vast.ai (see VASTAI.md), not on the local dev machine. A failure on one image
+vast.ai (see VAST_GUIDE.md), not on the local dev machine. A failure on one image
 is reported but does not stop the rest of the batch.
 
 Usage:

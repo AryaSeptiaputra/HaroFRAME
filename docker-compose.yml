@@ -1,6 +1,6 @@
 # Local Docker Desktop convenience wrapper around the root Dockerfile -- NOT
 # how vast.ai itself is configured (vast.ai takes a plain image via its own
-# UI, not a compose file; see VASTAI.md for that flow). Useful here for:
+# UI, not a compose file; see VAST_GUIDE.md for that flow). Useful here for:
 # reproducible local testing on a machine with a GPU, and for documenting the
 # volume mounts / env vars in one runnable place.
 #

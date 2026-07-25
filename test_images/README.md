@@ -1,7 +1,7 @@
 # test_images/
 
 Drop reference photos here to batch-test the generation pipeline against real
-people/model weights (needs GPU -- run this on vast.ai, see `VASTAI.md` at the
+people/model weights (needs GPU -- run this on vast.ai, see `VAST_GUIDE.md` at the
 repo root; it will not produce real output on the local dev machine).
 
 ## Usage
