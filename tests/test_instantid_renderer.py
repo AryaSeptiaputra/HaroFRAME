@@ -158,3 +158,21 @@ def test_render_passes_output_dimensions(mocker):
 
 	assert fake_pipeline.call_kwargs["width"] == 768
 	assert fake_pipeline.call_kwargs["height"] == 512
+
+
+def test_render_loads_lora_manager_once_when_provided(mocker):
+	fake_pipeline = _FakePipeline()
+	_patch_pipeline_builder(mocker, fake_pipeline)
+	_patch_analyzer(mocker, [])
+	identity_engine = _FakeIdentityEngine()
+	lora_manager = mocker.Mock()
+	renderer = InstantIdFrameRenderer(
+		identity_engine, IdentityConfig(device="cpu"), RenderConfig(), OutputConfig(), lora_manager
+	)
+	reference = _reference_with_embedding()
+	warped = Image.new("RGB", (64, 64))
+
+	renderer.render(warped, reference=reference, prompt="p", negative_prompt="", seed=1, frame_index=0)
+	renderer.render(warped, reference=reference, prompt="p", negative_prompt="", seed=1, frame_index=1)
+
+	lora_manager.load.assert_called_once_with(fake_pipeline)

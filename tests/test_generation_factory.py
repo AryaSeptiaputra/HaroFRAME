@@ -6,6 +6,7 @@ from app.core.config import GenerationConfig, IdentityConfig, InstantIdConfig
 from app.generation.exceptions import NoRendererAvailableError
 from app.generation.encode.video_writer import ImageioVideoEncoder
 from app.generation.factory import build_generation_pipeline
+from app.generation.lora.manager import PeftLoraManager
 from app.generation.pipeline import GenerationPipeline
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
@@ -32,6 +33,7 @@ def test_build_generation_pipeline_wires_img2img_renderer():
 	assert isinstance(pipeline, GenerationPipeline)
 	assert isinstance(pipeline._frame_renderer, Img2ImgFrameRenderer)
 	assert isinstance(pipeline._video_encoder, ImageioVideoEncoder)
+	assert isinstance(pipeline._frame_renderer._lora_manager, PeftLoraManager)
 
 
 def test_build_generation_pipeline_wires_instantid_renderer():

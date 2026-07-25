@@ -12,6 +12,7 @@ from app.identity.face.analyzer_insightface import InsightFaceAnalyzer
 from app.identity.instantid.pipeline import build_instantid_pipeline
 from app.identity.interfaces import IdentityReference, StructureHint
 from app.generation.interfaces import RenderedFrame
+from app.generation.lora.interfaces import LoraManager
 
 
 class InstantIdFrameRenderer:
@@ -34,11 +35,13 @@ class InstantIdFrameRenderer:
 		identity_config: IdentityConfig,
 		render_config: RenderConfig,
 		output_config: OutputConfig,
+		lora_manager: LoraManager | None = None,
 	) -> None:
 		self._identity_engine = identity_engine
 		self._identity_config = identity_config
 		self._render_config = render_config
 		self._output_config = output_config
+		self._lora_manager = lora_manager
 		self._pipeline: Any = None
 		self._face_analyzer = InsightFaceAnalyzer(identity_config.face)
 
@@ -47,6 +50,8 @@ class InstantIdFrameRenderer:
 			return self._pipeline
 		pipeline = build_instantid_pipeline(self._identity_config)
 		self._identity_engine.load(pipeline)
+		if self._lora_manager is not None:
+			self._lora_manager.load(pipeline)
 		self._pipeline = pipeline
 		return pipeline
 

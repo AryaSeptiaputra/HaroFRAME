@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 FusionStrategyName = Literal["mean", "weighted_by_det_score", "best_quality"]
@@ -87,6 +87,30 @@ class LoraEntryConfig(BaseModel):
 		return value
 
 
+class LoraConfig(BaseModel):
+	"""Container for the multi-LoRA mechanism (app/generation/lora/).
+
+	Distinct from IpAdapterConfig.lora_weight_name, which is a single companion
+	LoRA loaded by FaceIdSdxlProvider itself under the reserved "faceid" adapter
+	name -- this config is for additional, user-chosen style/aesthetic LoRAs
+	stacked on top via PEFT multi-adapter support.
+	"""
+
+	max_active_loras: int = 3
+	civitai_api_key: SecretStr | None = None
+	entries: list[LoraEntryConfig] = Field(default_factory=list)
+
+	@model_validator(mode="after")
+	def _enabled_count_within_limit(self) -> "LoraConfig":
+		enabled_count = sum(1 for entry in self.entries if entry.enabled)
+		if enabled_count > self.max_active_loras:
+			raise ValueError(
+				f"{enabled_count} LoRA entries are enabled, but max_active_loras={self.max_active_loras}; "
+				"disable some entries or raise max_active_loras"
+			)
+		return self
+
+
 class TemporalConfig(BaseModel):
 	method: Literal["none", "ema"] = "none"
 	smoothing_strength: float = 0.5
@@ -105,7 +129,7 @@ class OutputConfig(BaseModel):
 class GenerationConfig(BaseModel):
 	motion: CameraMotionConfig = Field(default_factory=CameraMotionConfig)
 	render: RenderConfig = Field(default_factory=RenderConfig)
-	loras: list[LoraEntryConfig] = Field(default_factory=list)
+	lora: LoraConfig = Field(default_factory=LoraConfig)
 	temporal: TemporalConfig = Field(default_factory=TemporalConfig)
 	output: OutputConfig = Field(default_factory=OutputConfig)
 	seed: int | None = None
