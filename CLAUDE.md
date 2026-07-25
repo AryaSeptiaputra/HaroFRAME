@@ -4,34 +4,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-HaroFRAME: an image2video generation system with identity (face) preservation. The
-identity-preservation module (`app/identity/`) is fully built; the actual video
-generation pipeline (`app/generation/`) is an empty stub and not yet implemented.
+HaroFRAME: an image2video generation system with identity (face) preservation.
+`app/identity/` (identity-preserving conditioning) and `app/generation/` (the
+frame-by-frame video generation pipeline built on top of it) are both fully built.
 
 ## Local vs. vast.ai execution
 
-**Real runs (anything touching torch/diffusers/actual model weights) happen on a
-vast.ai GPU rental instance, never on the local dev machine.** The local `.venv`
-here is intentionally minimal (only `pydantic`/`pydantic-settings` installed) —
-`numpy`, `pillow`, `torch`, `diffusers`, `insightface`, `opencv`, `pytest`, etc. are
-deliberately **not** installed locally. Don't `pip install` the full dependency set
-locally unless explicitly asked; it's several GB and isn't how this project is meant
-to run. Deployment is via the root `Dockerfile` — see "Deployment" below.
+**Real runs that need actual model weights or a GPU still happen on a vast.ai GPU
+rental instance, never on the local dev machine** (`torch.cuda.is_available()` is
+`False` locally — CPU-only). The local `.venv` does, however, have the full
+dependency set installed (`torch`, `diffusers`, `numpy`, `pillow`, `opencv`,
+`insightface`, `pytest`, etc.) for CPU-only import/logic verification — so
+`python -m pytest` actually runs and exercises real wiring locally (mocking out
+only the parts that need real GPU-side model weights, e.g. `diffusers`
+`from_pretrained()` calls, InstantID/SDXL pipeline `__call__`s, and real depth/LoRA
+downloads). Don't assume this holds for a fresh clone/environment, though — if
+`pytest` fails with `ModuleNotFoundError`, the deps genuinely aren't installed
+there and installing them is `pip install -e ".[gpu]"` (several GB). Deployment is
+via the root `Dockerfile` — see "Deployment" below.
 
 ## Commands
 
-- Syntax-check a file without any deps installed: `python -m py_compile <file>`
 - Run tests: `python -m pytest` / a single test: `python -m pytest tests/test_fusion.py::test_fuse_mean_normalizes_average`
-  - Only `tests/test_config.py` can actually execute in the local `.venv` today (needs
-    just pydantic). `tests/test_fusion.py` needs `numpy`; `tests/test_factory_wiring.py`
-    needs `torch`/`diffusers`/`pillow` — these will only run inside the Docker/vast.ai
-    environment until those are installed.
-- Install full stack (inside the Docker image / on vast.ai, not locally): `pip install -e ".[gpu]"`
+- Syntax-check a file without importing it: `python -m py_compile <file>`
+- Install full stack (inside the Docker image / on vast.ai, or locally if asked): `pip install -e ".[gpu]"`
 - Install the optional face-restoration extra (basicsr has no working build on
   Python 3.13 — sdist bug, no PyPI wheel — hence it's excluded from the Docker image
   by default): `pip install -e ".[restoration]"`
-- Manual end-to-end smoke test (needs real deps + reference photos, run on vast.ai):
-  `python scripts/smoke_test_identity.py ref1.jpg [ref2.jpg ...] [--driving driving.jpg]`
+- Manual end-to-end smoke tests (need real GPU/model weights, run on vast.ai):
+  - Identity module only: `python scripts/smoke_test_identity.py ref1.jpg [ref2.jpg ...] [--driving driving.jpg]`
+  - Generation, frames only (no video mux, dumps PNGs for visual QA): `python scripts/smoke_test_generation.py ref.jpg "a person smiling" --frames 16 --out outputs/smoke`
+  - Full pipeline, real video file: `python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --out outputs/clip.mp4`
 - Build the vast.ai image: `docker build -t <registry-user>/haroframe:latest .` (see header comment in `Dockerfile` for the full build/push/run workflow and required env vars)
 
 ## Config
@@ -44,7 +47,9 @@ rather than constructing `Settings()` directly outside of tests.
 
 `IdentityConfig` bundles five independent sub-configs (`face`, `ipadapter`,
 `instantid`, `controlnet`, `restoration`) plus top-level `device`/`dtype`/
-`cache_dir`/`hf_token`/`base_sdxl_model`.
+`cache_dir`/`hf_token`/`base_sdxl_model`. `GenerationConfig` (sibling field
+`Settings.generation`) bundles `motion`, `render`, `lora`, `temporal`, `output`
+sub-configs for the video pipeline — see "Generation module architecture" below.
 
 ## Identity module architecture (`app/identity/`)
 
@@ -96,6 +101,74 @@ silently picking one.
   signal (InstantID's keypoint ControlNet), to avoid colliding `controlnet`/
   `control_image` kwargs. `build_identity_engine(config)` wires the whole thing from
   `IdentityConfig`.
+
+## Generation module architecture (`app/generation/`)
+
+Motion is **synthesized, not driven** — there's no external driving video/pose
+sequence, just a text prompt plus optional camera-motion params. Every video is
+frame-by-frame SDXL generation (no AnimateDiff/SVD/video-diffusion backbone):
+a `CameraMotionPlanner` plans a pan/zoom trajectory, each frame gets warped from
+the source photo along that trajectory, then re-rendered through the
+identity-preserving stack with a **fixed seed across all frames** for temporal
+continuity, then optionally smoothed, then muxed into a video file.
+
+**The frame renderer branches on which face adapter `IdentityEngine` is
+holding** (dispatched once, in `app/generation/factory.py` — nowhere else
+branches on adapter type): the vendored InstantID pipeline has no img2img/
+`strength` entry point at all (`vendor/pipeline_stable_diffusion_xl_instantid.py`
+always denoises from pure noise), so it can't share one renderer implementation
+with the IP-Adapter family.
+
+- **`motion/`** — `CameraMotionPlanner` implementations. `KenBurns2DPlanner` is
+  **face-aware**: it clamps zoom/pan per frame (exact geometry, not an
+  approximation) so the face — from `FaceEmbedding.bbox` — never leaves the
+  crop, even under aggressive pan/zoom. `StaticMotionPlanner` is a zero-motion
+  baseline. `DepthParallaxPlanner` reuses `KenBurns2DPlanner`'s trajectory
+  unchanged — `mode="depth_parallax"` only changes the *warper*
+  (`DepthParallaxWarper`, which displaces pixels by scene depth from
+  `app/identity/controlnet/depth_estimator.py`'s shared `DepthEstimator` before
+  the usual crop/zoom), not the trajectory. `factory.py` has two dispatch
+  functions: `build_motion_planner()` and `build_frame_warper()`.
+- **`renderer/`** — `Img2ImgFrameRenderer` (IP-Adapter/FaceID-SDXL branch): warped
+  frame as `StableDiffusionXLImg2ImgPipeline` init image, low-moderate
+  `strength`, reuses `IdentityEngine.build_conditioning()` directly.
+  `InstantIdFrameRenderer`: no img2img possible, so **re-detects facial
+  landmarks on the warped frame itself** each render (reusing
+  `InsightFaceAnalyzer`) rather than transforming the reference photo's
+  landmarks through the warp matrix — robust to non-affine warps (depth
+  parallax) and self-correcting frame to frame. The **identity embedding always
+  stays locked to the original reference photo**; only the landmark *layout*
+  (via `dataclasses.replace`) comes from the warped frame. Falls back to the
+  reference's own landmarks (`face_detected=False` on the result) if
+  redetection fails on a given frame, rather than failing the frame outright.
+- **`lora/`** — `PeftLoraManager`: stacks multiple *named* style/aesthetic
+  LoRAs (`GenerationConfig.lora.entries`, capped by `max_active_loras`, default
+  3 — validated at config-parse time) on top of whichever pipeline a renderer
+  builds, via diffusers' PEFT multi-adapter API
+  (`load_lora_weights(adapter_name=...)` + one combined `set_adapters()` call
+  that always includes every already-attached adapter, e.g. the reserved
+  `"faceid"` companion LoRA from `FaceIdSdxlProvider`, since `set_adapters()`
+  only guarantees the weights of adapters named in that specific call).
+  `source_resolver.py` accepts a local path, a direct download URL, a Civitai
+  model-page URL (resolved via Civitai's API, optionally authenticated with
+  `GenerationConfig.lora.civitai_api_key`), or a bare HF repo_id (left
+  untouched — diffusers resolves those itself).
+- **`temporal/`** — `NullTemporalSmoother` is the default (`TemporalConfig.method
+  = "none"`). `EmaFrameSmoother` motion-compensates via opencv dense optical
+  flow (Farneback) before blending — naive (non-motion-compensated) blending
+  would smear/ghost under the camera pan every clip already has. Not the
+  default until validated against real output (see its docstring — plain
+  blending can trade flicker for blur, which may not be a better trade).
+- **`encode/`** — `ImageioVideoEncoder`, backed by `imageio`/`imageio-ffmpeg`
+  (bundled ffmpeg binary, no system install needed) — a **core** dependency,
+  not optional, since video output is this module's whole job.
+- **`pipeline.py` / `factory.py`** — `GenerationPipeline` (the `IdentityEngine`
+  analog): plans motion → warps+renders each frame with one fixed seed →
+  optional temporal smoothing → optional encoding to `output_path`. Never
+  branches on adapter/motion-mode type itself — takes an already-built
+  `IdentityEngine` plus already-dispatched planner/warper/renderer/smoother/
+  encoder. `build_generation_pipeline(generation_config, identity_config,
+  identity_engine)` is the one place all the `isinstance`/mode dispatch happens.
 
 ## Deployment
 
