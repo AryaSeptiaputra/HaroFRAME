@@ -13,6 +13,7 @@ from app.generation.motion.warp import AffineFrameWarper
 from app.generation.pipeline import GenerationPipeline
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
+from app.generation.temporal.factory import build_temporal_smoother
 
 
 def _build_frame_renderer(
@@ -47,5 +48,6 @@ def build_generation_pipeline(
 		build_motion_planner(generation_config.motion),
 		AffineFrameWarper(),
 		_build_frame_renderer(identity_engine, identity_config, generation_config, lora_manager),
+		temporal_smoother=build_temporal_smoother(generation_config.temporal),
 		video_encoder=ImageioVideoEncoder(codec=generation_config.output.codec),
 	)

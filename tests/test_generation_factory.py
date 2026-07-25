@@ -10,6 +10,7 @@ from app.generation.lora.manager import PeftLoraManager
 from app.generation.pipeline import GenerationPipeline
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
+from app.generation.temporal.passthrough import NullTemporalSmoother
 from app.identity.instantid.provider import InstantIdProvider
 
 
@@ -34,6 +35,7 @@ def test_build_generation_pipeline_wires_img2img_renderer():
 	assert isinstance(pipeline._frame_renderer, Img2ImgFrameRenderer)
 	assert isinstance(pipeline._video_encoder, ImageioVideoEncoder)
 	assert isinstance(pipeline._frame_renderer._lora_manager, PeftLoraManager)
+	assert isinstance(pipeline._temporal_smoother, NullTemporalSmoother)
 
 
 def test_build_generation_pipeline_wires_instantid_renderer():
