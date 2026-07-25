@@ -4,7 +4,7 @@ import pytest
 
 from pydantic import ValidationError
 
-from app.core.config import GenerationConfig, IdentityConfig, LoraEntryConfig, Settings, get_settings
+from app.core.config import GenerationConfig, IdentityConfig, LoraConfig, LoraEntryConfig, Settings, get_settings
 
 
 def test_identity_config_defaults():
@@ -25,7 +25,8 @@ def test_generation_config_defaults():
 
 	assert config.motion.mode == "ken_burns_2d"
 	assert config.render.strength == pytest.approx(0.35)
-	assert config.loras == []
+	assert config.lora.entries == []
+	assert config.lora.max_active_loras == 3
 	assert config.temporal.method == "none"
 	assert config.output.fps == 8
 	assert config.output.format == "mp4"
@@ -42,6 +43,28 @@ def test_lora_entry_config_accepts_other_names():
 
 	assert entry.adapter_name == "anime_style"
 	assert entry.enabled is True
+
+
+def test_lora_config_rejects_too_many_enabled_entries():
+	entries = [
+		LoraEntryConfig(adapter_name=f"style_{i}", source="some/repo") for i in range(4)
+	]
+
+	with pytest.raises(ValidationError):
+		LoraConfig(max_active_loras=3, entries=entries)
+
+
+def test_lora_config_ignores_disabled_entries_when_counting():
+	entries = [
+		LoraEntryConfig(adapter_name="a", source="x", enabled=True),
+		LoraEntryConfig(adapter_name="b", source="x", enabled=True),
+		LoraEntryConfig(adapter_name="c", source="x", enabled=False),
+		LoraEntryConfig(adapter_name="d", source="x", enabled=False),
+	]
+
+	config = LoraConfig(max_active_loras=2, entries=entries)
+
+	assert len(config.entries) == 4
 
 
 def test_settings_env_override(monkeypatch):
