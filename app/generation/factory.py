@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.core.config import GenerationConfig, IdentityConfig
 from app.identity.engine import IdentityEngine
+from app.identity.instantid.provider import InstantIdProvider
 from app.generation.encode.video_writer import ImageioVideoEncoder
 from app.generation.exceptions import NoRendererAvailableError
 from app.generation.interfaces import FrameRenderer
@@ -9,6 +10,7 @@ from app.generation.motion.factory import build_motion_planner
 from app.generation.motion.warp import AffineFrameWarper
 from app.generation.pipeline import GenerationPipeline
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
+from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
 
 
 def _build_frame_renderer(
@@ -20,8 +22,10 @@ def _build_frame_renderer(
 		raise NoRendererAvailableError(
 			"no face adapter configured; enable identity.ipadapter or identity.instantid"
 		)
-	# InstantID branch (app/generation/renderer/instantid_renderer.py) is dispatched
-	# here too once it exists; for now every configured face adapter renders via img2img.
+	if isinstance(identity_engine.face_adapter, InstantIdProvider):
+		return InstantIdFrameRenderer(
+			identity_engine, identity_config, generation_config.render, generation_config.output
+		)
 	return Img2ImgFrameRenderer(identity_engine, identity_config, generation_config.render)
 
 
