@@ -114,6 +114,14 @@ mencetak ringkasan OK/FAIL di akhir.
 python scripts/generate_video.py test_images/alex.jpg "a person smiling, gentle breeze" --out outputs/alex.mp4
 ```
 
+Atau, kalau mau menulis prompt dan mengatur kombinasi LoRA secara interaktif
+(tanya-jawab di terminal, tanpa perlu edit `.env`, pilihan LoRA hanya berlaku
+untuk sesi itu saja):
+
+```bash
+python scripts/interactive_generate.py
+```
+
 ## 10. Ambil hasil video dari instance
 
 Sama seperti langkah 6 tapi arah sebaliknya (`scp`/download lewat Instance

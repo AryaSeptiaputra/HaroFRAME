@@ -36,6 +36,7 @@ via the root `Dockerfile` — see "Deployment" below.
   - Generation, frames only (no video mux, dumps PNGs for visual QA): `python scripts/smoke_test_generation.py ref.jpg "a person smiling" --frames 16 --out outputs/smoke`
   - Full pipeline, real video file: `python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --out outputs/clip.mp4`
   - Batch over every photo in `test_images/` (gitignored — see `test_images/README.md`), one failure doesn't stop the rest: `python scripts/test_real_images.py --prompt "..."`
+  - Interactive (`input()`-based, no new deps): write the prompt and add/remove LoRAs by hand for a single run, without touching `.env` — LoRA choices are session-only, not persisted: `python scripts/interactive_generate.py`
 - Build the vast.ai image: `docker build -t <registry-user>/haroframe:latest .` — full step-by-step deploy/run walkthrough (instance creation, env vars, getting photos on/videos off the instance, troubleshooting) is in `VASTAI.md`, not repeated here
 - Local Docker Desktop testing (not how vast.ai itself is configured): `docker compose up -d` after `cp .env.example .env` — see `docker-compose.yml`
 
