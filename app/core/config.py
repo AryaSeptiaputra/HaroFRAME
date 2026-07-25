@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 FusionStrategyName = Literal["mean", "weighted_by_det_score", "best_quality"]
@@ -53,6 +53,64 @@ class RestorationConfig(BaseModel):
 	upscale: int = 1
 
 
+class CameraMotionConfig(BaseModel):
+	mode: Literal["static", "ken_burns_2d", "depth_parallax"] = "ken_burns_2d"
+	direction: Literal["auto", "left", "right", "up", "down", "in", "out"] = "auto"
+	zoom_range: tuple[float, float] = (1.0, 1.15)
+	pan_fraction: tuple[float, float] = (0.0, 0.08)
+	easing: Literal["linear", "ease_in_out"] = "ease_in_out"
+
+
+class RenderConfig(BaseModel):
+	strength: float = 0.35
+	guidance_scale: float = 5.0
+	num_inference_steps: int = 30
+	negative_prompt: str = ""
+	landmark_redetect_every_n_frames: int = 1
+
+
+class LoraEntryConfig(BaseModel):
+	enabled: bool = True
+	adapter_name: str
+	source: str
+	weight_name: str | None = None
+	subfolder: str | None = None
+	scale: float = 0.6
+
+	@field_validator("adapter_name")
+	@classmethod
+	def _adapter_name_not_reserved(cls, value: str) -> str:
+		if value == "faceid":
+			raise ValueError(
+				"adapter_name 'faceid' is reserved for the IP-Adapter-FaceID companion LoRA"
+			)
+		return value
+
+
+class TemporalConfig(BaseModel):
+	method: Literal["none", "ema"] = "none"
+	smoothing_strength: float = 0.5
+
+
+class OutputConfig(BaseModel):
+	fps: int = 8
+	duration_seconds: float = 4.0
+	width: int = 1024
+	height: int = 1024
+	format: Literal["mp4"] = "mp4"
+	codec: str = "libx264"
+	output_dir: Path = Path("outputs")
+
+
+class GenerationConfig(BaseModel):
+	motion: CameraMotionConfig = Field(default_factory=CameraMotionConfig)
+	render: RenderConfig = Field(default_factory=RenderConfig)
+	loras: list[LoraEntryConfig] = Field(default_factory=list)
+	temporal: TemporalConfig = Field(default_factory=TemporalConfig)
+	output: OutputConfig = Field(default_factory=OutputConfig)
+	seed: int | None = None
+
+
 class IdentityConfig(BaseModel):
 	device: Literal["cuda", "cpu", "mps"] = "cuda"
 	dtype: Literal["fp16", "bf16", "fp32"] = "fp16"
@@ -76,6 +134,7 @@ class Settings(BaseSettings):
 	)
 
 	identity: IdentityConfig = Field(default_factory=IdentityConfig)
+	generation: GenerationConfig = Field(default_factory=GenerationConfig)
 
 
 @lru_cache
