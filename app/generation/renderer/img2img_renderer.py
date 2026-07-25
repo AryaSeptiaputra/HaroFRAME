@@ -10,6 +10,7 @@ from app.identity.engine import IdentityEngine
 from app.identity.exceptions import ModelLoadError
 from app.identity.interfaces import IdentityReference
 from app.generation.interfaces import RenderedFrame
+from app.generation.lora.interfaces import LoraManager
 
 _TORCH_DTYPES = {
 	"fp16": torch.float16,
@@ -28,10 +29,17 @@ class Img2ImgFrameRenderer:
 	temporal continuity.
 	"""
 
-	def __init__(self, identity_engine: IdentityEngine, identity_config: IdentityConfig, render_config: RenderConfig) -> None:
+	def __init__(
+		self,
+		identity_engine: IdentityEngine,
+		identity_config: IdentityConfig,
+		render_config: RenderConfig,
+		lora_manager: LoraManager | None = None,
+	) -> None:
 		self._identity_engine = identity_engine
 		self._identity_config = identity_config
 		self._render_config = render_config
+		self._lora_manager = lora_manager
 		self._pipeline: Any = None
 
 	def _ensure_pipeline(self) -> Any:
@@ -54,6 +62,8 @@ class Img2ImgFrameRenderer:
 		)
 		pipeline.to(self._identity_config.device, dtype)
 		self._identity_engine.load(pipeline)
+		if self._lora_manager is not None:
+			self._lora_manager.load(pipeline)
 		self._pipeline = pipeline
 		return pipeline
 
