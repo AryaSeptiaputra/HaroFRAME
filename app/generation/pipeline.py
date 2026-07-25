@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import random
+from dataclasses import replace
+from pathlib import Path
+
+from app.identity.engine import IdentityEngine
+from app.generation.exceptions import NoRendererAvailableError
+from app.generation.interfaces import (
+	CameraMotionPlanner,
+	FrameRenderer,
+	FrameWarper,
+	GenerationRequest,
+	GenerationResult,
+	TemporalSmoother,
+	VideoEncoder,
+)
+
+_MAX_SEED = 2**31 - 1
+
+
+class GenerationPipeline:
+	"""Orchestrates one generate() call: motion planning -> per-frame warp+render
+	-> optional temporal smoothing -> optional video encoding.
+
+	Analogous to IdentityEngine: holds one instance of each stage and never
+	branches on adapter type itself -- that dispatch lives entirely in
+	app/generation/factory.py, at construction time.
+	"""
+
+	def __init__(
+		self,
+		identity_engine: IdentityEngine,
+		motion_planner: CameraMotionPlanner,
+		frame_warper: FrameWarper,
+		frame_renderer: FrameRenderer,
+		*,
+		temporal_smoother: TemporalSmoother | None = None,
+		video_encoder: VideoEncoder | None = None,
+	) -> None:
+		self._identity_engine = identity_engine
+		self._motion_planner = motion_planner
+		self._frame_warper = frame_warper
+		self._frame_renderer = frame_renderer
+		self._temporal_smoother = temporal_smoother
+		self._video_encoder = video_encoder
+
+	def generate(self, request: GenerationRequest, *, output_path: Path | None = None) -> GenerationResult:
+		if self._identity_engine.face_adapter is None:
+			raise NoRendererAvailableError(
+				"no face adapter configured; enable identity.ipadapter or identity.instantid"
+			)
+
+		reference = request.reference
+		if reference.fused_embedding is None:
+			self._identity_engine.prepare_reference(reference)
+
+		source_image = reference.images[0]
+		motion_spec = request.motion
+		if motion_spec.face_bbox is None and reference.fused_embedding is not None:
+			motion_spec = replace(motion_spec, face_bbox=reference.fused_embedding.bbox)
+
+		plan = self._motion_planner.plan(source_image.size, motion_spec)
+
+		seed = request.seed if request.seed is not None else random.randint(0, _MAX_SEED)
+
+		rendered_frames = []
+		for transform in plan.transforms:
+			warped = self._frame_warper.warp(source_image, transform)
+			rendered_frames.append(
+				self._frame_renderer.render(
+					warped,
+					reference=reference,
+					prompt=request.prompt,
+					negative_prompt=request.negative_prompt,
+					seed=seed,
+					frame_index=transform.frame_index,
+				)
+			)
+
+		if self._temporal_smoother is not None:
+			smoothed = self._temporal_smoother.smooth([frame.image for frame in rendered_frames])
+			for frame, image in zip(rendered_frames, smoothed):
+				frame.image = image
+
+		result = GenerationResult(frames=rendered_frames, fps=plan.fps)
+		if output_path is not None and self._video_encoder is not None:
+			result.output_path = self._video_encoder.encode(
+				[frame.image for frame in rendered_frames], plan.fps, output_path
+			)
+		return result
