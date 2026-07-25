@@ -41,7 +41,12 @@ class FaceIdSdxlProvider:
 			weight_name=self._config.weight_name,
 		)
 		if self._config.lora_weight_name:
-			pipeline.load_lora_weights(self._config.repo_id, weight_name=self._config.lora_weight_name)
+			# adapter_name is pinned so app/generation/lora's PeftLoraManager can
+			# name this adapter explicitly in its own set_adapters() calls --
+			# "faceid" is reserved for this purpose (see LoraEntryConfig).
+			pipeline.load_lora_weights(
+				self._config.repo_id, weight_name=self._config.lora_weight_name, adapter_name="faceid"
+			)
 		pipeline.set_ip_adapter_scale(self._config.scale)
 		self._loaded = True
 
