@@ -4,3 +4,10 @@ __pycache__/
 haroframe.egg-info/
 .cache/
 .claude/
+outputs/
+.env
+
+# Real reference photos dropped here for scripts/test_real_images.py --
+# personal data, never commit these.
+test_images/*
+!test_images/README.md
