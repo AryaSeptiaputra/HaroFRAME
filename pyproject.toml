@@ -19,6 +19,8 @@ dependencies = [
     "insightface>=0.7.3,<2",
     "controlnet_aux>=0.0.9",
     "einops>=0.8,<1",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
 ]
 
 [project.optional-dependencies]
