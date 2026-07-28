@@ -34,9 +34,10 @@ via the root `Dockerfile` — see "Deployment" below.
 - Manual end-to-end smoke tests (need real GPU/model weights, run on vast.ai):
   - Identity module only: `python scripts/smoke_test_identity.py ref1.jpg [ref2.jpg ...] [--driving driving.jpg]`
   - Generation, frames only (no video mux, dumps PNGs for visual QA): `python scripts/smoke_test_generation.py ref.jpg "a person smiling" --frames 16 --out outputs/smoke`
-  - Full pipeline, real video file: `python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --out outputs/clip.mp4`
+  - Full pipeline, real video file (image2video): `python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --out outputs/clip.mp4`
+  - Single transformed image (image2image, no motion/video): `python scripts/generate_image.py ref.jpg "anime style portrait" --out outputs/ref_img2img.png`
   - Batch over every photo in `test_images/` (gitignored — see `test_images/README.md`), one failure doesn't stop the rest: `python scripts/test_real_images.py --prompt "..."`
-  - Interactive (`input()`-based, no new deps): write the prompt and add/remove LoRAs by hand for a single run, without touching `.env` — LoRA choices are session-only, not persisted: `python scripts/interactive_generate.py`
+  - Interactive (`input()`-based, no new deps), install checkpoints/LoRAs then submit i2v/i2i jobs to a background queue: `python scripts/interactive_generate.py` — see "Interactive CLI" below
 - Build the vast.ai image: `docker build -t <registry-user>/haroframe:latest .` — full step-by-step deploy/run walkthrough (instance creation, env vars, getting photos on/videos off the instance, troubleshooting) is in `VAST_GUIDE.md`, not repeated here
 - Local Docker Desktop testing (not how vast.ai itself is configured): `docker compose up -d` after `cp .env.example .env` — see `docker-compose.yml`
 
@@ -53,6 +54,17 @@ rather than constructing `Settings()` directly outside of tests.
 `cache_dir`/`hf_token`/`base_sdxl_model`. `GenerationConfig` (sibling field
 `Settings.generation`) bundles `motion`, `render`, `lora`, `temporal`, `output`
 sub-configs for the video pipeline — see "Generation module architecture" below.
+
+`base_sdxl_model` can be either a Hugging Face repo_id/local diffusers
+directory *or* a single-file checkpoint path (e.g. a `.safetensors` downloaded
+from Civitai/a direct link via `app/generation/source_resolver.py`'s
+`resolve_model_source()`) — both renderers build their pipeline through
+`app/identity/sdxl_pipeline_loader.py:load_sdxl_pipeline()`, which dispatches
+to `from_single_file()` vs `from_pretrained()` based on whether the value is
+an existing local file. `resolve_model_source()` is shared by LoRA and
+checkpoint installation alike — same four source kinds either way (local
+path, direct URL, Civitai model-page/download URL, bare repo_id) — see
+`scripts/interactive_generate.py`.
 
 ## Identity module architecture (`app/identity/`)
 
@@ -152,8 +164,10 @@ with the IP-Adapter family.
   that always includes every already-attached adapter, e.g. the reserved
   `"faceid"` companion LoRA from `FaceIdSdxlProvider`, since `set_adapters()`
   only guarantees the weights of adapters named in that specific call).
-  `source_resolver.py` accepts a local path, a direct download URL, a Civitai
-  model-page URL (resolved via Civitai's API, optionally authenticated with
+  Source resolution itself lives in `app/generation/source_resolver.py`
+  (`resolve_model_source()`, shared with SDXL checkpoint installation) —
+  accepts a local path, a direct download URL, a Civitai model-page URL
+  (resolved via Civitai's API, optionally authenticated with
   `GenerationConfig.lora.civitai_api_key`), or a bare HF repo_id (left
   untouched — diffusers resolves those itself).
 - **`temporal/`** — `NullTemporalSmoother` is the default (`TemporalConfig.method
@@ -172,6 +186,40 @@ with the IP-Adapter family.
   `IdentityEngine` plus already-dispatched planner/warper/renderer/smoother/
   encoder. `build_generation_pipeline(generation_config, identity_config,
   identity_engine)` is the one place all the `isinstance`/mode dispatch happens.
+  `generate()` takes an optional `progress_callback(frames_done, total_frames)`,
+  invoked after each frame — used by the interactive CLI's queue status view,
+  not otherwise wired to anything. `factory.build_frame_renderer()` (same
+  isinstance dispatch, minus motion/encoding) is public on its own too, for
+  callers that want a single rendered frame with no video pipeline at all —
+  `scripts/generate_image.py` (image2image: renders once, directly from the
+  reference photo, no warp) is the one that does this.
+
+## Interactive CLI (`scripts/interactive_generate.py`)
+
+Install-then-select-then-queue, not configure-then-run-once: (0) enter
+Hugging Face/Civitai API keys for the session (hidden via `getpass`, itself
+guarded by a manual `sys.stdin.isatty()` check — `getpass.getpass()` on
+Windows reads straight from the console via `msvcrt` and hangs instead of
+falling back when stdin is piped/redirected, unlike POSIX); (1)/(2) install
+one or more SDXL checkpoints and LoRAs into a *pool* (downloaded immediately,
+same four source kinds as above) without selecting what's used yet; then a
+looping main menu: submit a job (photo, prompt, i2v/i2i mode, mode-specific
+overrides, then *select* which pooled checkpoint/LoRA(s) to use for this job),
+check queue status, or exit.
+
+`GenerationQueueManager` runs submitted `GenerationJob`s one at a time on a
+single background daemon thread (`queue.Queue` + `threading.Thread`) so
+submitting returns to the menu immediately instead of blocking; status shows
+`queued`/`running` (with `frame X/Y` for i2v, via `progress_callback`
+above)/`done`/`failed` per job. **Each job builds its own `IdentityEngine`**
+rather than sharing one across jobs in the queue — `FaceIdSdxlProvider.load()`
+(and similarly-shaped `load()` methods) track "already loaded" as a bool on
+the adapter instance itself, not per-pipeline, so reusing one `IdentityEngine`
+across jobs whose selected checkpoint/LoRA differ (hence a fresh pipeline
+object each time) would silently skip re-attaching the adapter to later jobs'
+pipelines. Rebuilding per job is cheap (no model weights load at construction
+time). Exiting with jobs still queued/running warns first, since the daemon
+thread (and anything it's mid-render on) is dropped when the process exits.
 
 ## Deployment
 

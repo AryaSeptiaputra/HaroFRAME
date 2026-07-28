@@ -65,9 +65,12 @@ delimiter `__`). Yang paling sering dipakai:
 | `HAROFRAME_IDENTITY__DEVICE` | `cuda` di vast.ai |
 | `HAROFRAME_GENERATION__MOTION__MODE` | `ken_burns_2d` (default), `static`, atau `depth_parallax` |
 | `HAROFRAME_GENERATION__OUTPUT__FPS`, `HAROFRAME_GENERATION__OUTPUT__DURATION_SECONDS` | Panjang & fps video output |
-| `HAROFRAME_GENERATION__LORA__CIVITAI_API_KEY` | Opsional, hanya kalau LoRA dari Civitai butuh auth |
+| `HAROFRAME_GENERATION__LORA__CIVITAI_API_KEY` | Opsional, hanya kalau LoRA/checkpoint dari Civitai butuh auth |
 
-Lihat `.env.example` untuk template siap-copy.
+Lihat `.env.example` untuk template siap-copy. Kalau pakai
+`scripts/interactive_generate.py`, token HF & Civitai API key ini juga bisa
+diisi/ditimpa langsung di awal sesi CLI-nya (langkah 0) tanpa perlu edit
+`.env` -- lihat langkah 9 di bawah.
 
 ## 5. Verifikasi environment
 
@@ -108,19 +111,36 @@ python scripts/test_real_images.py --prompt "a person, natural lighting, subtle 
 Script ini jalan per-foto, satu foto gagal tidak menghentikan sisanya, dan
 mencetak ringkasan OK/FAIL di akhir.
 
-## 9. Generate satu video
+## 9. Generate video atau gambar tunggal
 
 ```bash
+# Image2video -- animasi (motion dari HAROFRAME_GENERATION__MOTION__MODE):
 python scripts/generate_video.py test_images/alex.jpg "a person smiling, gentle breeze" --out outputs/alex.mp4
+
+# Image2image -- satu gambar hasil transformasi dari foto yang sama, tanpa motion:
+python scripts/generate_image.py test_images/alex.jpg "anime style portrait" --out outputs/alex_img2img.png
 ```
 
-Atau, kalau mau menulis prompt dan mengatur kombinasi LoRA secara interaktif
-(tanya-jawab di terminal, tanpa perlu edit `.env`, pilihan LoRA hanya berlaku
-untuk sesi itu saja):
+Atau pakai CLI interaktif (`scripts/interactive_generate.py`) kalau mau
+menulis prompt, memilih model, dan submit beberapa job sekaligus tanpa edit
+`.env`:
 
 ```bash
 python scripts/interactive_generate.py
 ```
+
+Alurnya: (0) masukkan Hugging Face token / Civitai API key untuk sesi ini
+(opsional, input disamarkan, Enter = pakai dari `.env`) → (1)/(2) install
+satu atau beberapa **checkpoint SDXL** dan **LoRA** ke pool (bisa dari link
+Civitai, link download langsung, path lokal, atau repo_id HuggingFace --
+diunduh saat itu juga) → lalu menu utama yang bisa dipakai berulang kali:
+**submit job baru** (pilih foto, tulis prompt, pilih mode **Image2Video**
+atau **Image2Image**, pilih checkpoint & LoRA mana dari yang sudah
+terinstall, konfirmasi), **lihat status antrian** (job jalan satu per satu di
+background -- submit tidak menunggu selesai, bisa langsung submit job lain
+atau cek status: `queued`/`running` dengan progress frame/`done`/`failed`),
+atau **keluar** (akan memperingatkan kalau masih ada job yang belum selesai --
+job itu hilang kalau tetap keluar).
 
 ## 10. Ambil hasil video dari instance
 
