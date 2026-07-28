@@ -123,6 +123,18 @@ def test_generate_renders_one_frame_per_planned_transform():
 	assert result.fps == 8
 
 
+def test_generate_calls_progress_callback_after_each_frame():
+	pipeline = GenerationPipeline(_FakeIdentityEngine(), _FakeMotionPlanner(num_frames=3), _FakeFrameWarper(), _FakeFrameRenderer())
+	progress_calls = []
+
+	pipeline.generate(
+		GenerationRequest(reference=_reference(), prompt="x"),
+		progress_callback=lambda done, total: progress_calls.append((done, total)),
+	)
+
+	assert progress_calls == [(1, 3), (2, 3), (3, 3)]
+
+
 def test_generate_applies_temporal_smoother_when_present():
 	smoother = _FakeTemporalSmoother()
 	pipeline = GenerationPipeline(
