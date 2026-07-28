@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from dataclasses import replace
 from pathlib import Path
+from typing import Callable
 
 from app.identity.engine import IdentityEngine
 from app.generation.exceptions import NoRendererAvailableError
@@ -45,7 +46,16 @@ class GenerationPipeline:
 		self._temporal_smoother = temporal_smoother
 		self._video_encoder = video_encoder
 
-	def generate(self, request: GenerationRequest, *, output_path: Path | None = None) -> GenerationResult:
+	def generate(
+		self,
+		request: GenerationRequest,
+		*,
+		output_path: Path | None = None,
+		progress_callback: Callable[[int, int], None] | None = None,
+	) -> GenerationResult:
+		"""``progress_callback(frames_done, total_frames)`` is invoked after each
+		frame renders -- e.g. for a queue/job-status UI (scripts/interactive_generate.py)
+		to report per-frame progress on a long-running video generation."""
 		if self._identity_engine.face_adapter is None:
 			raise NoRendererAvailableError(
 				"no face adapter configured; enable identity.ipadapter or identity.instantid"
@@ -65,6 +75,7 @@ class GenerationPipeline:
 		seed = request.seed if request.seed is not None else random.randint(0, _MAX_SEED)
 
 		rendered_frames = []
+		total_frames = len(plan.transforms)
 		for transform in plan.transforms:
 			warped = self._frame_warper.warp(source_image, transform)
 			rendered_frames.append(
@@ -77,6 +88,8 @@ class GenerationPipeline:
 					frame_index=transform.frame_index,
 				)
 			)
+			if progress_callback is not None:
+				progress_callback(len(rendered_frames), total_frames)
 
 		if self._temporal_smoother is not None:
 			smoothed = self._temporal_smoother.smooth([frame.image for frame in rendered_frames])
