@@ -15,6 +15,26 @@ _CIVITAI_DOWNLOAD_URL_RE = re.compile(r"civitai\.com/api/download/models/(\d+)",
 _CONTENT_DISPOSITION_FILENAME_RE = re.compile(r'filename="?([^";]+)"?')
 
 
+class _DropAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+	"""Civitai's download endpoint 307-redirects to a presigned Cloudflare R2 URL
+	(auth embedded in the query string) -- urllib's default redirect handling
+	carries the original request's Authorization header along to that new host,
+	and R2/S3 rejects requests that present both a presigned-URL signature and an
+	Authorization header (query-string auth + header auth at once), returning 403.
+	Dropping the header whenever the redirect target's host differs from the
+	original request's host avoids that, and is a no-op for any other redirect."""
+
+	def redirect_request(self, req, fp, code, msg, headers, newurl):
+		new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+		if new_req is not None and urlparse(newurl).netloc != urlparse(req.full_url).netloc:
+			new_req.headers.pop("Authorization", None)
+			new_req.unredirected_hdrs.pop("Authorization", None)
+		return new_req
+
+
+_OPENER = urllib.request.build_opener(_DropAuthOnCrossHostRedirect)
+
+
 class ModelSourceError(GenerationModuleError):
 	"""Raised when a model source (URL, repo_id, or path) can't be resolved/downloaded.
 
@@ -78,24 +98,47 @@ def _resolve_download_url(source: str, civitai_api_key: str | None) -> tuple[str
 
 
 def _fetch_json(url: str, civitai_api_key: str | None) -> dict:
+	"""Try without a key first (works for public models, and avoids sending a
+	possibly-stale/invalid key), then only retry with the Authorization header
+	if that fails and a key is actually available -- covers gated models that
+	need auth without penalizing the common public-model case."""
+	try:
+		return _fetch_json_once(url, None)
+	except ModelSourceError:
+		if not civitai_api_key:
+			raise
+		return _fetch_json_once(url, civitai_api_key)
+
+
+def _fetch_json_once(url: str, civitai_api_key: str | None) -> dict:
 	request = urllib.request.Request(url)
 	if civitai_api_key:
 		request.add_header("Authorization", f"Bearer {civitai_api_key}")
 	try:
-		with urllib.request.urlopen(request, timeout=30) as response:
+		with _OPENER.open(request, timeout=30) as response:
 			return json.loads(response.read())
-	except ModelSourceError:
-		raise
 	except Exception as exc:
 		raise ModelSourceError(f"failed to query {url!r}: {exc}") from exc
 
 
 def _download(url: str, filename: str, cache_dir: Path, civitai_api_key: str | None, subdir: str) -> Path:
+	"""Same no-key-first, retry-with-key-on-failure strategy as _fetch_json --
+	only meaningful for Civitai URLs, since a key is never attached for any
+	other host in the first place."""
+	try:
+		return _download_once(url, filename, cache_dir, None, subdir)
+	except ModelSourceError:
+		if not (civitai_api_key and "civitai.com" in url):
+			raise
+		return _download_once(url, filename, cache_dir, civitai_api_key, subdir)
+
+
+def _download_once(url: str, filename: str, cache_dir: Path, civitai_api_key: str | None, subdir: str) -> Path:
 	request = urllib.request.Request(url)
-	if civitai_api_key and "civitai.com" in url:
+	if civitai_api_key:
 		request.add_header("Authorization", f"Bearer {civitai_api_key}")
 	try:
-		with urllib.request.urlopen(request, timeout=300) as response:
+		with _OPENER.open(request, timeout=300) as response:
 			resolved_filename = filename or _filename_from_response(response, url)
 			target_dir = cache_dir / subdir
 			target_dir.mkdir(parents=True, exist_ok=True)
@@ -104,8 +147,6 @@ def _download(url: str, filename: str, cache_dir: Path, civitai_api_key: str | N
 				with open(target_path, "wb") as file_obj:
 					file_obj.write(response.read())
 			return target_path
-	except ModelSourceError:
-		raise
 	except Exception as exc:
 		raise ModelSourceError(f"failed to download model from {url!r}: {exc}") from exc
 
