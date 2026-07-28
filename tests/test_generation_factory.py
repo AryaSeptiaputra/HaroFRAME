@@ -5,7 +5,7 @@ import pytest
 from app.core.config import GenerationConfig, IdentityConfig, InstantIdConfig
 from app.generation.exceptions import NoRendererAvailableError
 from app.generation.encode.video_writer import ImageioVideoEncoder
-from app.generation.factory import build_generation_pipeline
+from app.generation.factory import build_frame_renderer, build_generation_pipeline
 from app.generation.lora.manager import PeftLoraManager
 from app.generation.pipeline import GenerationPipeline
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
@@ -44,3 +44,21 @@ def test_build_generation_pipeline_wires_instantid_renderer():
 	pipeline = build_generation_pipeline(GenerationConfig(), IdentityConfig(), identity_engine)
 
 	assert isinstance(pipeline._frame_renderer, InstantIdFrameRenderer)
+
+
+def test_build_frame_renderer_raises_without_face_adapter():
+	identity_engine = _FakeIdentityEngine(face_adapter=None)
+
+	with pytest.raises(NoRendererAvailableError):
+		build_frame_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+
+
+def test_build_frame_renderer_usable_standalone_for_image2image():
+	# scripts/generate_image.py calls this directly (not via build_generation_pipeline)
+	# to render a single image without motion planning/video encoding.
+	identity_engine = _FakeIdentityEngine(face_adapter=object())
+
+	renderer = build_frame_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+
+	assert isinstance(renderer, Img2ImgFrameRenderer)
+	assert isinstance(renderer._lora_manager, PeftLoraManager)
