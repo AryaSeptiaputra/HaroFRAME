@@ -15,16 +15,22 @@ from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
 from app.generation.temporal.factory import build_temporal_smoother
 
 
-def _build_frame_renderer(
+def build_frame_renderer(
 	identity_engine: IdentityEngine,
 	identity_config: IdentityConfig,
 	generation_config: GenerationConfig,
-	lora_manager: LoraManager,
 ) -> FrameRenderer:
+	"""Build the adapter-appropriate FrameRenderer, LoRA manager included.
+
+	Public (not just used by build_generation_pipeline) so single-image
+	image2image entry points (scripts/generate_image.py) can render one frame
+	directly without going through motion planning/video encoding at all.
+	"""
 	if identity_engine.face_adapter is None:
 		raise NoRendererAvailableError(
 			"no face adapter configured; enable identity.ipadapter or identity.instantid"
 		)
+	lora_manager: LoraManager = PeftLoraManager(generation_config.lora, identity_config.cache_dir)
 	if isinstance(identity_engine.face_adapter, InstantIdProvider):
 		return InstantIdFrameRenderer(
 			identity_engine,
@@ -41,12 +47,11 @@ def build_generation_pipeline(
 	identity_config: IdentityConfig,
 	identity_engine: IdentityEngine,
 ) -> GenerationPipeline:
-	lora_manager = PeftLoraManager(generation_config.lora, identity_config.cache_dir)
 	return GenerationPipeline(
 		identity_engine,
 		build_motion_planner(generation_config.motion),
 		build_frame_warper(generation_config.motion),
-		_build_frame_renderer(identity_engine, identity_config, generation_config, lora_manager),
+		build_frame_renderer(identity_engine, identity_config, generation_config),
 		temporal_smoother=build_temporal_smoother(generation_config.temporal),
 		video_encoder=ImageioVideoEncoder(codec=generation_config.output.codec),
 	)
