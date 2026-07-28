@@ -1,16 +1,16 @@
 #!/bin/bash
 # HaroFRAME — vast.ai "On-start Script"
 #
-# Alternative to the root Dockerfile: instead of building/pushing a custom
-# image, point a vast.ai instance at a stock PyTorch template and paste this
-# script into "On-start Script". Runs every time the instance (re)starts —
-# idempotent, safe on a fresh instance, a restarted one, or one stopped/
-# started repeatedly. Prepares the environment so that once you connect
-# (Instance Portal / exec), you can go straight to:
+# For a vast.ai instance created from the official "PyTorch" template (not
+# the root Dockerfile's custom-image path -- see VAST_GUIDE.md for that
+# alternative). Paste this script into the instance/template's "On-start
+# Script" field. Runs every time the instance (re)starts -- idempotent, safe
+# on a fresh instance, a restarted one, or one stopped/started repeatedly.
+# Prepares the environment so that once you connect (Instance Portal / exec),
+# you can go straight to:
 #   python3 scripts/generate_video.py test_images/alex.jpg "a person smiling"
 #   python3 scripts/interactive_generate.py
-# See VAST_GUIDE.md for the full walkthrough this automates (and for the
-# Dockerfile-based deploy path, which is the other supported option).
+# See VAST_GUIDE.md for the full walkthrough this automates.
 #
 # Secrets are deliberately NOT set here: export
 # HAROFRAME_IDENTITY__HF_TOKEN and (optionally)
@@ -26,7 +26,20 @@ BRANCH="main"
 
 echo "=== [entrypoint] $(date) starting ==="
 
-# --- 1. Clone or update the repo ---
+# --- 1. Activate the template's pre-installed PyTorch venv, if present ---
+# The official vast.ai PyTorch template ships PyTorch pre-installed at
+# /venv/main, pre-built against that instance's CUDA/driver -- activating it
+# (instead of falling back to plain `python3`, which may resolve to a
+# different, unaccelerated interpreter in a non-interactive on-start-script
+# shell) is what makes step 3 below reuse that build rather than pulling a
+# second, possibly mismatched torch wheel from PyPI.
+if [ -f /venv/main/bin/activate ]; then
+    echo "[entrypoint] activating vast.ai PyTorch template venv (/venv/main)..."
+    # shellcheck disable=SC1091
+    source /venv/main/bin/activate
+fi
+
+# --- 2. Clone or update the repo ---
 if [ -d "$REPO_DIR/.git" ]; then
     echo "[entrypoint] repo exists at $REPO_DIR, pulling latest $BRANCH..."
     cd "$REPO_DIR"
@@ -40,7 +53,7 @@ else
     git checkout "$BRANCH"
 fi
 
-# --- 2. System deps (mirrors the apt-get layer in the root Dockerfile) ---
+# --- 3. System deps (mirrors the apt-get layer in the root Dockerfile) ---
 # opencv-python needs libgl1/libglib2.0-0 even headless; build-essential
 # covers any package that needs to compile from sdist. imageio-ffmpeg bundles
 # its own ffmpeg binary, so no system ffmpeg install is needed here.
@@ -53,12 +66,13 @@ if [ -n "$MISSING_APT_PKGS" ]; then
     apt-get update && apt-get install -y --no-install-recommends $MISSING_APT_PKGS
 fi
 
-# --- 3. Python deps ---
-# torch is a hard dependency in pyproject.toml (torch>=2.4, installed from
-# PyPI with its own bundled CUDA runtime) rather than assumed to come from
-# the template, so this pulls/upgrades it like any other project dependency
-# -- unlike templates that pre-pin torch, there's no need to keep it out of
-# this install. The gpu extra pulls onnxruntime-gpu; the optional
+# --- 4. Python deps ---
+# pyproject.toml pins torch>=2.4 as a hard dependency, but pip only reinstalls
+# a package if the currently-active interpreter's installed version doesn't
+# already satisfy that constraint -- since step 1 activated the template's
+# venv first, its pre-installed (CUDA-matched) torch build already satisfies
+# >=2.4 and is left untouched; only the project's own deps and onnxruntime-gpu
+# (from the gpu extra) actually get installed/changed here. The optional
 # restoration/garment extras are intentionally NOT installed here (matches
 # the Dockerfile) since they're large and only some setups need them -- see
 # VAST_GUIDE.md's Troubleshooting section for the manual install commands.
@@ -66,14 +80,14 @@ echo "[entrypoint] installing python deps (pip install -e .[gpu])..."
 python3 -m pip install --upgrade pip
 python3 -m pip install -e ".[gpu]"
 
-# --- 4. Cache/output directories ---
+# --- 5. Cache/output directories ---
 # .cache/models is where SDXL base/InstantID/IP-Adapter/LoRA weights get
 # lazily downloaded to on first use (see IdentityConfig.cache_dir) -- created
 # up front so a persistent-disk mount at this path (if configured) is used
 # from the very first run instead of the first run creating it mid-download.
 mkdir -p .cache/models outputs test_images
 
-# --- 5. Sanity checks ---
+# --- 6. Sanity checks ---
 echo "[entrypoint] torch/cuda check:"
 python3 -c "import torch; print(' torch', torch.__version__, 'cuda:', torch.cuda.is_available())"
 
