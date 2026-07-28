@@ -111,15 +111,18 @@ def _prompt_yes_no(label: str, default: bool) -> bool:
 
 
 def _choose_reference_image() -> Path:
+	folder_input = input(f"\nFolder foto referensi [{_TEST_IMAGES_DIR}]: ").strip()
+	folder = Path(folder_input) if folder_input else _TEST_IMAGES_DIR
+
 	candidates = []
-	if _TEST_IMAGES_DIR.is_dir():
-		candidates = sorted(p for p in _TEST_IMAGES_DIR.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS)
+	if folder.is_dir():
+		candidates = sorted(p for p in folder.iterdir() if p.suffix.lower() in _IMAGE_EXTENSIONS)
 
 	if candidates:
-		print(f"\nFoto ditemukan di {_TEST_IMAGES_DIR}/:")
+		print(f"Foto ditemukan di {folder}/:")
 		for idx, path in enumerate(candidates, start=1):
 			print(f"  [{idx}] {path.name}")
-		print("  [0] Ketik path lain")
+		print("  [0] Ketik path file lain")
 		while True:
 			choice = input("Pilih nomor: ").strip()
 			if choice == "0":
@@ -127,6 +130,8 @@ def _choose_reference_image() -> Path:
 			if choice.isdigit() and 1 <= int(choice) <= len(candidates):
 				return candidates[int(choice) - 1]
 			print("  (nomor tidak valid)")
+	else:
+		print(f"  (folder {folder} tidak ditemukan atau tidak berisi foto)")
 
 	while True:
 		typed = input("Path foto referensi: ").strip()
@@ -244,7 +249,9 @@ def _install_lora_interactive(cache_dir: Path, civitai_api_key: str | None) -> L
 		"Link/path LoRA (link Civitai, link download langsung, path lokal, atau repo_id HuggingFace)",
 		required=True,
 	)
-	scale = _prompt_float("Bobot/scale", default=0.6)
+	scale = _prompt_float(
+		"Bobot/scale LoRA (0-1, disarankan 0.5-0.8; makin tinggi = gaya LoRA makin dominan)", default=0.6
+	)
 	weight_name = _prompt_text("Nama file weight (Enter jika tidak perlu)") or None
 	subfolder = _prompt_text("Subfolder repo (Enter jika tidak perlu)") or None
 
@@ -556,7 +563,9 @@ def _configure_job_interactive(
 	elif mode == "i2i":
 		frames_override = None
 		strength_override = _prompt_float(
-			"Strength img2img (khusus IP-Adapter, diabaikan InstantID)", default=settings.generation.render.strength
+			"Strength img2img (0-1, disarankan 0.2-0.5; makin tinggi = makin jauh dari foto asli; "
+			"khusus IP-Adapter, diabaikan InstantID)",
+			default=settings.generation.render.strength,
 		)
 		default_output_name = f"{reference_image.stem}_img2img.png"
 	else:  # garment
@@ -569,9 +578,13 @@ def _configure_job_interactive(
 		default_output_name = f"{reference_image.stem}_garment.png"
 
 	print("\n--- Parameter Render (opsional, Enter = default dari config) ---")
-	guidance_scale = _prompt_float("Guidance scale (CFG)", default=settings.generation.render.guidance_scale)
+	guidance_scale = _prompt_float(
+		"Guidance scale/CFG (disarankan 4-8; makin tinggi = makin taat ke prompt, terlalu tinggi bisa oversaturate)",
+		default=settings.generation.render.guidance_scale,
+	)
 	num_inference_steps = _prompt_int(
-		"Jumlah inference steps", default=settings.generation.render.num_inference_steps
+		"Jumlah inference steps (disarankan 20-50; makin tinggi = detail lebih baik tapi lebih lambat)",
+		default=settings.generation.render.num_inference_steps,
 	)
 
 	pose_enabled = settings.identity.controlnet.pose_enabled
@@ -582,19 +595,33 @@ def _configure_job_interactive(
 		print("\n--- Structure ControlNet (opsional, khusus IP-Adapter) ---")
 		pose_enabled = _prompt_yes_no("Aktifkan pose ControlNet (DWPose/OpenPose)?", default=pose_enabled)
 		if pose_enabled:
-			pose_scale = _prompt_float("  Pose conditioning scale", default=pose_scale)
+			pose_scale = _prompt_float(
+				"  Pose conditioning scale (0-1, disarankan 0.4-0.8; makin tinggi = pose makin ketat "
+				"mengikuti foto asli)",
+				default=pose_scale,
+			)
 		depth_enabled = _prompt_yes_no("Aktifkan depth ControlNet?", default=depth_enabled)
 		if depth_enabled:
-			depth_scale = _prompt_float("  Depth conditioning scale", default=depth_scale)
+			depth_scale = _prompt_float(
+				"  Depth conditioning scale (0-1, disarankan 0.4-0.8; makin tinggi = struktur 3D makin "
+				"ketat mengikuti foto asli)",
+				default=depth_scale,
+			)
 
 	garment_inpaint_strength = settings.generation.garment.inpaint_strength
 	garment_mask_dilation_px = settings.generation.garment.mask_dilation_px
 	garment_include_legs = settings.generation.garment.include_legs_in_mask
 	if mode == "garment":
 		print("\n--- Parameter Garment-Swap (opsional, Enter = default dari config) ---")
-		garment_inpaint_strength = _prompt_float("Inpaint strength", default=garment_inpaint_strength)
+		garment_inpaint_strength = _prompt_float(
+			"Inpaint strength (0-1, disarankan 0.7-0.95; rendah = baju baru kurang menyatu, tinggi = "
+			"perubahan lebih total tapi risiko tepi mask meleset)",
+			default=garment_inpaint_strength,
+		)
 		garment_mask_dilation_px = _prompt_int(
-			"Mask dilation px (perluas area utk kulit yang baru terbuka)", default=garment_mask_dilation_px
+			"Mask dilation px (disarankan 20-60; naikkan kalau kulit yang baru terbuka masih kelihatan "
+			"sisa baju lama)",
+			default=garment_mask_dilation_px,
 		)
 		garment_include_legs = _prompt_yes_no("Termasuk area kaki dalam mask?", default=garment_include_legs)
 		garment_strength_override = garment_inpaint_strength
