@@ -7,6 +7,7 @@ from app.identity.exceptions import ModelLoadError
 from app.identity.instantid.vendor.pipeline_stable_diffusion_xl_instantid import (
 	StableDiffusionXLInstantIDPipeline,
 )
+from app.identity.sdxl_pipeline_loader import load_sdxl_pipeline
 
 _TORCH_DTYPES = {
 	"fp16": torch.float16,
@@ -37,12 +38,13 @@ def build_instantid_pipeline(config: IdentityConfig) -> StableDiffusionXLInstant
 		cache_dir=config.cache_dir,
 		token=hf_token,
 	)
-	pipeline = StableDiffusionXLInstantIDPipeline.from_pretrained(
+	pipeline = load_sdxl_pipeline(
+		StableDiffusionXLInstantIDPipeline,
 		config.base_sdxl_model,
-		controlnet=controlnet,
 		torch_dtype=dtype,
 		cache_dir=config.cache_dir,
 		token=hf_token,
+		controlnet=controlnet,
 	)
 	pipeline.to(config.device, dtype)
 	return pipeline

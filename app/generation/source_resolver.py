@@ -7,7 +7,6 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-from app.core.config import LoraEntryConfig
 from app.generation.exceptions import GenerationModuleError
 
 _CIVITAI_MODEL_URL_RE = re.compile(r"civitai\.com/models/(\d+)", re.IGNORECASE)
@@ -16,21 +15,31 @@ _CIVITAI_DOWNLOAD_URL_RE = re.compile(r"civitai\.com/api/download/models/(\d+)",
 _CONTENT_DISPOSITION_FILENAME_RE = re.compile(r'filename="?([^";]+)"?')
 
 
-class LoraSourceError(GenerationModuleError):
-	"""Raised when a LoRA source (URL, repo_id, or path) can't be resolved/downloaded."""
+class ModelSourceError(GenerationModuleError):
+	"""Raised when a model source (URL, repo_id, or path) can't be resolved/downloaded.
+
+	Shared by LoRA installation (app/generation/lora/manager.py) and SDXL
+	checkpoint installation (scripts/interactive_generate.py) -- both a LoRA
+	weight file and a single-file SDXL checkpoint are downloadable from the
+	exact same kinds of platforms (Civitai, direct URL, local path, HF repo_id).
+	"""
 
 
-def resolve_lora_source(entry: LoraEntryConfig, cache_dir: Path, civitai_api_key: str | None) -> str:
-	"""Resolve ``entry.source`` into something ``pipeline.load_lora_weights()`` can
-	consume directly.
+def resolve_model_source(
+	source: str, cache_dir: Path, civitai_api_key: str | None, *, subdir: str = "downloads"
+) -> str:
+	"""Resolve ``source`` into something directly consumable (a local file path
+	string, or an unchanged Hugging Face repo_id).
 
 	Three cases: an existing local path is returned as-is; a Civitai model-page
 	URL is resolved via Civitai's API to the real file and downloaded; any other
 	http(s) URL is downloaded directly. Anything else (no scheme, not a local
 	path) is assumed to already be a Hugging Face repo_id and is returned
 	unchanged -- diffusers/huggingface_hub resolve those natively.
+
+	``subdir`` controls which cache_dir subfolder downloaded files land in
+	(e.g. "loras" vs "checkpoints") so the two don't collide.
 	"""
-	source = entry.source
 	local_path = Path(source)
 	if local_path.exists():
 		return str(local_path)
@@ -38,7 +47,7 @@ def resolve_lora_source(entry: LoraEntryConfig, cache_dir: Path, civitai_api_key
 	parsed = urlparse(source)
 	if parsed.scheme in ("http", "https"):
 		download_url, filename = _resolve_download_url(source, civitai_api_key)
-		return str(_download(download_url, filename, cache_dir, civitai_api_key))
+		return str(_download(download_url, filename, cache_dir, civitai_api_key, subdir))
 
 	return source
 
@@ -60,7 +69,7 @@ def _resolve_download_url(source: str, civitai_api_key: str | None) -> tuple[str
 		version = payload if "files" in payload else payload["modelVersions"][0]
 		files = version.get("files", [])
 		if not files:
-			raise LoraSourceError(f"Civitai model at {source!r} has no downloadable files")
+			raise ModelSourceError(f"Civitai model at {source!r} has no downloadable files")
 		primary = next((f for f in files if f.get("primary")), files[0])
 		return primary["downloadUrl"], primary.get("name", "")
 
@@ -75,30 +84,30 @@ def _fetch_json(url: str, civitai_api_key: str | None) -> dict:
 	try:
 		with urllib.request.urlopen(request, timeout=30) as response:
 			return json.loads(response.read())
-	except LoraSourceError:
+	except ModelSourceError:
 		raise
 	except Exception as exc:
-		raise LoraSourceError(f"failed to query {url!r}: {exc}") from exc
+		raise ModelSourceError(f"failed to query {url!r}: {exc}") from exc
 
 
-def _download(url: str, filename: str, cache_dir: Path, civitai_api_key: str | None) -> Path:
+def _download(url: str, filename: str, cache_dir: Path, civitai_api_key: str | None, subdir: str) -> Path:
 	request = urllib.request.Request(url)
 	if civitai_api_key and "civitai.com" in url:
 		request.add_header("Authorization", f"Bearer {civitai_api_key}")
 	try:
 		with urllib.request.urlopen(request, timeout=300) as response:
 			resolved_filename = filename or _filename_from_response(response, url)
-			target_dir = cache_dir / "loras"
+			target_dir = cache_dir / subdir
 			target_dir.mkdir(parents=True, exist_ok=True)
 			target_path = target_dir / resolved_filename
 			if not target_path.exists():
 				with open(target_path, "wb") as file_obj:
 					file_obj.write(response.read())
 			return target_path
-	except LoraSourceError:
+	except ModelSourceError:
 		raise
 	except Exception as exc:
-		raise LoraSourceError(f"failed to download LoRA from {url!r}: {exc}") from exc
+		raise ModelSourceError(f"failed to download model from {url!r}: {exc}") from exc
 
 
 def _filename_from_response(response, url: str) -> str:

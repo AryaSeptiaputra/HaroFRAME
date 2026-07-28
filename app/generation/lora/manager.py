@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import LoraConfig
-from app.generation.lora.source_resolver import resolve_lora_source
+from app.generation.source_resolver import resolve_model_source
 
 
 class PeftLoraManager:
@@ -35,7 +35,7 @@ class PeftLoraManager:
 		names: list[str] = []
 		weights: list[float] = []
 		for entry in enabled_entries:
-			resolved_source = resolve_lora_source(entry, self._cache_dir, civitai_api_key)
+			resolved_source = resolve_model_source(entry.source, self._cache_dir, civitai_api_key, subdir="loras")
 			pipeline.load_lora_weights(
 				resolved_source,
 				weight_name=entry.weight_name,

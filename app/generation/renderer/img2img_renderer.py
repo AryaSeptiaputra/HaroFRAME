@@ -9,6 +9,7 @@ from app.core.config import IdentityConfig, RenderConfig
 from app.identity.engine import IdentityEngine
 from app.identity.exceptions import ModelLoadError
 from app.identity.interfaces import IdentityReference
+from app.identity.sdxl_pipeline_loader import load_sdxl_pipeline
 from app.generation.interfaces import RenderedFrame
 from app.generation.lora.interfaces import LoraManager
 
@@ -54,7 +55,8 @@ class Img2ImgFrameRenderer:
 
 		dtype = _TORCH_DTYPES[self._identity_config.dtype]
 		hf_token = self._identity_config.hf_token.get_secret_value() if self._identity_config.hf_token else None
-		pipeline = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+		pipeline = load_sdxl_pipeline(
+			StableDiffusionXLImg2ImgPipeline,
 			self._identity_config.base_sdxl_model,
 			torch_dtype=dtype,
 			cache_dir=self._identity_config.cache_dir,

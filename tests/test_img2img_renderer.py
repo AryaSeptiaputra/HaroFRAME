@@ -96,6 +96,26 @@ def test_render_strength_override_takes_precedence(mocker):
 	assert fake_pipeline.call_kwargs["strength"] == 0.9
 
 
+def test_render_uses_from_single_file_when_base_model_is_a_local_checkpoint(tmp_path, mocker):
+	checkpoint_path = tmp_path / "model.safetensors"
+	checkpoint_path.write_bytes(b"x")
+	fake_pipeline = _FakePipeline()
+	from_single_file = mocker.patch(
+		"diffusers.StableDiffusionXLImg2ImgPipeline.from_single_file", return_value=fake_pipeline
+	)
+	from_pretrained = mocker.patch("diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained")
+	identity_engine = _FakeIdentityEngine()
+	identity_config = IdentityConfig(device="cpu", base_sdxl_model=str(checkpoint_path))
+	renderer = Img2ImgFrameRenderer(identity_engine, identity_config, RenderConfig())
+	warped = Image.new("RGB", (8, 8))
+	reference = _reference()
+
+	renderer.render(warped, reference=reference, prompt="p", negative_prompt="", seed=1, frame_index=0)
+
+	from_single_file.assert_called_once()
+	from_pretrained.assert_not_called()
+
+
 def test_render_loads_lora_manager_once_when_provided(mocker):
 	fake_pipeline = _FakePipeline()
 	mocker.patch("diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained", return_value=fake_pipeline)
