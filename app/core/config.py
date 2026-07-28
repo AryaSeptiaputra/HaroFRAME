@@ -53,6 +53,27 @@ class RestorationConfig(BaseModel):
 	upscale: int = 1
 
 
+class SamConfig(BaseModel):
+	model_type: Literal["vit_h", "vit_l", "vit_b"] = "vit_b"
+	checkpoint_path: Path = Path(".cache/models/sam/sam_vit_b_01ec64.pth")
+
+
+class GarmentSwapConfig(BaseModel):
+	sam: SamConfig = Field(default_factory=SamConfig)
+	mask_dilation_px: int = 40
+	mask_feather_px: int = 8
+	mask_min_confidence: float = 0.3
+	include_arms_in_mask: bool = True
+	include_legs_in_mask: bool = False
+	inpaint_strength: float = 0.85
+	guidance_scale: float = 6.0
+	num_inference_steps: int = 35
+	use_pose_controlnet: bool = True
+	pose_conditioning_scale: float = 0.5
+	pose_repo_id: str = "thibaud/controlnet-openpose-sdxl-1.0"
+	negative_prompt: str = ""
+
+
 class CameraMotionConfig(BaseModel):
 	mode: Literal["static", "ken_burns_2d", "depth_parallax"] = "ken_burns_2d"
 	direction: Literal["auto", "left", "right", "up", "down", "in", "out"] = "auto"
@@ -132,6 +153,7 @@ class GenerationConfig(BaseModel):
 	lora: LoraConfig = Field(default_factory=LoraConfig)
 	temporal: TemporalConfig = Field(default_factory=TemporalConfig)
 	output: OutputConfig = Field(default_factory=OutputConfig)
+	garment: GarmentSwapConfig = Field(default_factory=GarmentSwapConfig)
 	seed: int | None = None
 
 

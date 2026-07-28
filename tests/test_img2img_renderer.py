@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from app.core.config import IdentityConfig, RenderConfig
+from app.core.config import ControlNetConfig, IdentityConfig, RenderConfig
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.identity.interfaces import IdentityConditioning, IdentityReference
 
@@ -32,11 +32,13 @@ class _FakeIdentityEngine:
 		self.conditioning = IdentityConditioning(
 			adapter_kwargs={"ip_adapter_image_embeds": ["x"]}, applied_adapters=["ip_adapter_faceid_sdxl"]
 		)
+		self.received_structure = "unset"
 
 	def load(self, pipeline):
 		self.loaded_pipelines.append(pipeline)
 
 	def build_conditioning(self, reference, *, structure=None, scale=1.0):
+		self.received_structure = structure
 		return self.conditioning
 
 
@@ -129,3 +131,48 @@ def test_render_loads_lora_manager_once_when_provided(mocker):
 	renderer.render(warped, reference=reference, prompt="p", negative_prompt="", seed=1, frame_index=1)
 
 	lora_manager.load.assert_called_once_with(fake_pipeline)
+
+
+def test_render_passes_no_structure_hint_by_default(mocker):
+	fake_pipeline = _FakePipeline()
+	mocker.patch("diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained", return_value=fake_pipeline)
+	identity_engine = _FakeIdentityEngine()
+	renderer = Img2ImgFrameRenderer(identity_engine, IdentityConfig(device="cpu"), RenderConfig())
+	warped = Image.new("RGB", (8, 8))
+
+	renderer.render(warped, reference=_reference(), prompt="p", negative_prompt="", seed=1, frame_index=0)
+
+	assert identity_engine.received_structure is None
+
+
+def test_render_passes_structure_hint_when_pose_enabled(mocker):
+	fake_pipeline = _FakePipeline()
+	mocker.patch("diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained", return_value=fake_pipeline)
+	identity_engine = _FakeIdentityEngine()
+	identity_config = IdentityConfig(device="cpu", controlnet=ControlNetConfig(pose_enabled=True))
+	renderer = Img2ImgFrameRenderer(identity_engine, identity_config, RenderConfig())
+	warped = Image.new("RGB", (8, 8))
+
+	renderer.render(warped, reference=_reference(), prompt="p", negative_prompt="", seed=1, frame_index=0)
+
+	structure = identity_engine.received_structure
+	assert structure is not None
+	assert structure.pose_image is warped
+	assert structure.depth_image is None
+	assert structure.source == "driving_frame"
+
+
+def test_render_passes_structure_hint_when_depth_enabled(mocker):
+	fake_pipeline = _FakePipeline()
+	mocker.patch("diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained", return_value=fake_pipeline)
+	identity_engine = _FakeIdentityEngine()
+	identity_config = IdentityConfig(device="cpu", controlnet=ControlNetConfig(depth_enabled=True))
+	renderer = Img2ImgFrameRenderer(identity_engine, identity_config, RenderConfig())
+	warped = Image.new("RGB", (8, 8))
+
+	renderer.render(warped, reference=_reference(), prompt="p", negative_prompt="", seed=1, frame_index=0)
+
+	structure = identity_engine.received_structure
+	assert structure is not None
+	assert structure.pose_image is None
+	assert structure.depth_image is warped

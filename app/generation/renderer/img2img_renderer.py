@@ -8,7 +8,7 @@ from PIL import Image
 from app.core.config import IdentityConfig, RenderConfig
 from app.identity.engine import IdentityEngine
 from app.identity.exceptions import ModelLoadError
-from app.identity.interfaces import IdentityReference
+from app.identity.interfaces import IdentityReference, StructureHint
 from app.identity.sdxl_pipeline_loader import load_sdxl_pipeline
 from app.generation.interfaces import RenderedFrame
 from app.generation.lora.interfaces import LoraManager
@@ -81,7 +81,15 @@ class Img2ImgFrameRenderer:
 		strength: float | None = None,
 	) -> RenderedFrame:
 		pipeline = self._ensure_pipeline()
-		conditioning = self._identity_engine.build_conditioning(reference)
+		controlnet_cfg = self._identity_config.controlnet
+		structure = None
+		if controlnet_cfg.pose_enabled or controlnet_cfg.depth_enabled:
+			structure = StructureHint(
+				pose_image=warped_frame if controlnet_cfg.pose_enabled else None,
+				depth_image=warped_frame if controlnet_cfg.depth_enabled else None,
+				source="driving_frame",
+			)
+		conditioning = self._identity_engine.build_conditioning(reference, structure=structure)
 		generator = torch.Generator(device=self._identity_config.device).manual_seed(seed)
 
 		result = pipeline(

@@ -46,8 +46,9 @@ from pydantic import ValidationError
 
 from app.core.config import GenerationConfig, IdentityConfig, LoraConfig, LoraEntryConfig, get_settings
 from app.identity.factory import build_identity_engine
+from app.identity.instantid.provider import InstantIdProvider
 from app.identity.interfaces import IdentityReference
-from app.generation.factory import build_frame_renderer, build_generation_pipeline
+from app.generation.factory import build_frame_renderer, build_garment_renderer, build_generation_pipeline
 from app.generation.interfaces import CameraMotionSpec, GenerationRequest
 from app.generation.source_resolver import ModelSourceError, resolve_model_source
 
@@ -88,6 +89,25 @@ def _prompt_optional_int(label: str) -> int | None:
 	except ValueError:
 		print("  (bukan angka, dilewati)")
 		return None
+
+
+def _prompt_int(label: str, default: int) -> int:
+	while True:
+		raw = input(f"{label} [{default}]: ").strip()
+		if not raw:
+			return default
+		try:
+			return int(raw)
+		except ValueError:
+			print("  (masukkan bilangan bulat, contoh: 30)")
+
+
+def _prompt_yes_no(label: str, default: bool) -> bool:
+	marker = "Y/n" if default else "y/N"
+	raw = input(f"{label} [{marker}]: ").strip().lower()
+	if not raw:
+		return default
+	return raw == "y"
 
 
 def _choose_reference_image() -> Path:
@@ -332,12 +352,15 @@ def _select_generation_mode() -> str:
 	print("\n=== Mode Generate ===")
 	print("[1] Image2Video (animasi, motion dari config)")
 	print("[2] Image2Image (satu gambar hasil, tanpa motion)")
+	print("[3] Garment-Swap (ganti pakaian, SAM-based inpaint)")
 	while True:
 		choice = input("Pilih: ").strip()
 		if choice == "1":
 			return "i2v"
 		if choice == "2":
 			return "i2i"
+		if choice == "3":
+			return "garment"
 		print("  (pilihan tidak dikenal)")
 
 
@@ -352,7 +375,7 @@ def _select_generation_mode() -> str:
 @dataclasses.dataclass
 class GenerationJob:
 	job_id: int
-	mode: str  # "i2v" or "i2i"
+	mode: str  # "i2v", "i2i", or "garment"
 	reference_image: Path
 	prompt: str
 	negative_prompt: str
@@ -362,6 +385,8 @@ class GenerationJob:
 	output_path: Path
 	identity_config: IdentityConfig
 	generation_config: GenerationConfig
+	garment_prompt: str | None = None
+	garment_strength_override: float | None = None
 	status: str = "queued"  # queued, running, done, failed
 	current_frame: int = 0
 	total_frames: int = 0
@@ -421,8 +446,10 @@ class GenerationQueueManager:
 				identity_engine = build_identity_engine(job.identity_config)
 				if job.mode == "i2v":
 					self._run_i2v(job, identity_engine)
-				else:
+				elif job.mode == "i2i":
 					self._run_i2i(job, identity_engine)
+				else:
+					self._run_garment(job, identity_engine)
 				job.status = "done"
 			except Exception as exc:  # noqa: BLE001 -- report any failure on the job, don't crash the worker
 				job.status = "failed"
@@ -477,12 +504,32 @@ class GenerationQueueManager:
 		rendered.image.save(job.output_path)
 		job.result_path = job.output_path
 
+	def _run_garment(self, job: GenerationJob, identity_engine) -> None:
+		renderer = build_garment_renderer(identity_engine, job.identity_config, job.generation_config)
+		source_image = Image.open(job.reference_image).convert("RGB")
+		reference = IdentityReference(images=[source_image])
+		seed = job.seed if job.seed is not None else random.randint(0, _MAX_SEED)
+
+		identity_engine.prepare_reference(reference)
+		rendered = renderer.render_garment_swap(
+			source_image,
+			reference=reference,
+			garment_prompt=job.garment_prompt,
+			negative_prompt=job.negative_prompt,
+			seed=seed,
+			strength=job.garment_strength_override,
+		)
+		job.output_path.parent.mkdir(parents=True, exist_ok=True)
+		rendered.image.save(job.output_path)
+		job.result_path = job.output_path
+
 
 def _configure_job_interactive(
 	job_id: int,
 	settings,
 	installed_checkpoints: list[str],
 	installed_loras: list[LoraEntryConfig],
+	is_ipadapter_branch: bool,
 ) -> GenerationJob | None:
 	"""Steps 3-6: photo, prompt, mode, mode-specific overrides, checkpoint/LoRA
 	selection, summary + confirm. Returns a GenerationJob ready to enqueue, or
@@ -492,18 +539,66 @@ def _configure_job_interactive(
 	negative_prompt = _prompt_text("Negative prompt (opsional)")
 
 	mode = _select_generation_mode()
+	if mode == "garment" and not is_ipadapter_branch:
+		print(
+			"Garment-Swap butuh IP-Adapter/FaceID-SDXL aktif -- InstantID tidak didukung "
+			"(vendored pipeline tidak punya entry point inpaint/img2img)."
+		)
+		return None
 
 	seed_override = _prompt_optional_int("Seed")
+	garment_prompt = None
+	garment_strength_override = None
 	if mode == "i2v":
 		frames_override = _prompt_optional_int("Jumlah frame")
 		strength_override = None
 		default_output_name = f"{reference_image.stem}.{settings.generation.output.format}"
-	else:
+	elif mode == "i2i":
 		frames_override = None
 		strength_override = _prompt_float(
 			"Strength img2img (khusus IP-Adapter, diabaikan InstantID)", default=settings.generation.render.strength
 		)
 		default_output_name = f"{reference_image.stem}_img2img.png"
+	else:  # garment
+		frames_override = None
+		strength_override = None
+		garment_prompt = _prompt_text(
+			"Deskripsi pakaian baru (target outfit, mis. 'sleeveless summer top, light shorts')",
+			required=True,
+		)
+		default_output_name = f"{reference_image.stem}_garment.png"
+
+	print("\n--- Parameter Render (opsional, Enter = default dari config) ---")
+	guidance_scale = _prompt_float("Guidance scale (CFG)", default=settings.generation.render.guidance_scale)
+	num_inference_steps = _prompt_int(
+		"Jumlah inference steps", default=settings.generation.render.num_inference_steps
+	)
+
+	pose_enabled = settings.identity.controlnet.pose_enabled
+	pose_scale = settings.identity.controlnet.pose_conditioning_scale
+	depth_enabled = settings.identity.controlnet.depth_enabled
+	depth_scale = settings.identity.controlnet.depth_conditioning_scale
+	if is_ipadapter_branch and mode != "garment":
+		print("\n--- Structure ControlNet (opsional, khusus IP-Adapter) ---")
+		pose_enabled = _prompt_yes_no("Aktifkan pose ControlNet (DWPose/OpenPose)?", default=pose_enabled)
+		if pose_enabled:
+			pose_scale = _prompt_float("  Pose conditioning scale", default=pose_scale)
+		depth_enabled = _prompt_yes_no("Aktifkan depth ControlNet?", default=depth_enabled)
+		if depth_enabled:
+			depth_scale = _prompt_float("  Depth conditioning scale", default=depth_scale)
+
+	garment_inpaint_strength = settings.generation.garment.inpaint_strength
+	garment_mask_dilation_px = settings.generation.garment.mask_dilation_px
+	garment_include_legs = settings.generation.garment.include_legs_in_mask
+	if mode == "garment":
+		print("\n--- Parameter Garment-Swap (opsional, Enter = default dari config) ---")
+		garment_inpaint_strength = _prompt_float("Inpaint strength", default=garment_inpaint_strength)
+		garment_mask_dilation_px = _prompt_int(
+			"Mask dilation px (perluas area utk kulit yang baru terbuka)", default=garment_mask_dilation_px
+		)
+		garment_include_legs = _prompt_yes_no("Termasuk area kaki dalam mask?", default=garment_include_legs)
+		garment_strength_override = garment_inpaint_strength
+
 	output_name = _prompt_text("Nama file output", default=default_output_name)
 
 	base_model = _select_checkpoint(installed_checkpoints)
@@ -514,17 +609,44 @@ def _configure_job_interactive(
 		print(f"Konfigurasi LoRA tidak valid: {exc}")
 		return None
 
-	identity_config = (
-		settings.identity
-		if base_model == settings.identity.base_sdxl_model
-		else settings.identity.model_copy(update={"base_sdxl_model": base_model})
+	identity_updates: dict = {}
+	if base_model != settings.identity.base_sdxl_model:
+		identity_updates["base_sdxl_model"] = base_model
+	if is_ipadapter_branch:
+		new_controlnet = settings.identity.controlnet.model_copy(
+			update={
+				"pose_enabled": pose_enabled,
+				"pose_conditioning_scale": pose_scale,
+				"depth_enabled": depth_enabled,
+				"depth_conditioning_scale": depth_scale,
+			}
+		)
+		if new_controlnet != settings.identity.controlnet:
+			identity_updates["controlnet"] = new_controlnet
+	identity_config = settings.identity if not identity_updates else settings.identity.model_copy(update=identity_updates)
+
+	new_render_config = settings.generation.render.model_copy(
+		update={"guidance_scale": guidance_scale, "num_inference_steps": num_inference_steps}
 	)
 	generation_config = settings.generation.model_copy(
-		update={"lora": LoraConfig(max_active_loras=max_active_loras, entries=lora_entries)}
+		update={
+			"lora": LoraConfig(max_active_loras=max_active_loras, entries=lora_entries),
+			"render": new_render_config,
+		}
 	)
+	if mode == "garment":
+		new_garment_config = settings.generation.garment.model_copy(
+			update={
+				"inpaint_strength": garment_inpaint_strength,
+				"mask_dilation_px": garment_mask_dilation_px,
+				"include_legs_in_mask": garment_include_legs,
+			}
+		)
+		generation_config = generation_config.model_copy(update={"garment": new_garment_config})
 
+	mode_label = {"i2v": "Image2Video", "i2i": "Image2Image", "garment": "Garment-Swap"}[mode]
 	print("\n=== Ringkasan Job ===")
-	print(f"Mode      : {'Image2Video' if mode == 'i2v' else 'Image2Image'}")
+	print(f"Mode      : {mode_label}")
 	print(f"Base model: {base_model}")
 	print(f"Foto      : {reference_image}")
 	print(f"Prompt    : {prompt}")
@@ -532,8 +654,18 @@ def _configure_job_interactive(
 	print(f"LoRA aktif: {len(lora_entries)} ({', '.join(e.adapter_name for e in lora_entries) or '-'})")
 	if mode == "i2v":
 		print(f"Frame     : {frames_override if frames_override is not None else 'default dari config'}")
-	else:
+	elif mode == "i2i":
 		print(f"Strength  : {strength_override}")
+	else:
+		print(f"Outfit    : {garment_prompt}")
+		print(f"Inpaint strength: {garment_inpaint_strength}")
+		print(f"Mask dilation px: {garment_mask_dilation_px}")
+		print(f"Termasuk kaki   : {'ya' if garment_include_legs else 'tidak'}")
+	print(f"Guidance  : {guidance_scale}")
+	print(f"Steps     : {num_inference_steps}")
+	if is_ipadapter_branch and mode != "garment":
+		print(f"Pose CN   : {'on scale=' + str(pose_scale) if pose_enabled else 'off'}")
+		print(f"Depth CN  : {'on scale=' + str(depth_scale) if depth_enabled else 'off'}")
 	print(f"Output    : outputs/{output_name}")
 	confirm = input("Tambahkan ke antrian? [y/N]: ").strip().lower()
 	if confirm != "y":
@@ -555,6 +687,8 @@ def _configure_job_interactive(
 		output_path=output_dir / output_name,
 		identity_config=identity_config,
 		generation_config=generation_config,
+		garment_prompt=garment_prompt,
+		garment_strength_override=garment_strength_override,
 	)
 
 
@@ -567,6 +701,7 @@ def main() -> int:
 		print("FAIL: no face adapter enabled (identity.ipadapter.enabled / identity.instantid.enabled)")
 		return 1
 	print(f"face adapter aktif : {type(identity_engine.face_adapter).__name__}")
+	is_ipadapter_branch = not isinstance(identity_engine.face_adapter, InstantIdProvider)
 
 	default_hf_token = settings.identity.hf_token.get_secret_value() if settings.identity.hf_token else None
 	default_civitai_api_key = (
@@ -593,7 +728,9 @@ def main() -> int:
 		print("[3] Keluar")
 		choice = input("Pilih: ").strip()
 		if choice == "1":
-			job = _configure_job_interactive(next_job_id, settings, installed_checkpoints, installed_loras)
+			job = _configure_job_interactive(
+				next_job_id, settings, installed_checkpoints, installed_loras, is_ipadapter_branch
+			)
 			if job is not None:
 				manager.submit(job)
 				print(f"Job #{job.job_id} ditambahkan ke antrian.")

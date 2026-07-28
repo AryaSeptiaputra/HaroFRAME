@@ -33,6 +33,28 @@ def test_generation_config_defaults():
 	assert config.seed is None
 
 
+def test_garment_swap_config_defaults():
+	config = GenerationConfig().garment
+
+	assert config.sam.model_type == "vit_b"
+	assert config.mask_dilation_px == 40
+	assert config.mask_feather_px == 8
+	assert config.include_arms_in_mask is True
+	assert config.include_legs_in_mask is False
+	assert config.inpaint_strength == pytest.approx(0.85)
+	assert config.use_pose_controlnet is True
+
+
+def test_settings_garment_env_override(monkeypatch):
+	monkeypatch.setenv("HAROFRAME_GENERATION__GARMENT__MASK_DILATION_PX", "80")
+	monkeypatch.setenv("HAROFRAME_GENERATION__GARMENT__SAM__MODEL_TYPE", "vit_h")
+
+	settings = Settings()
+
+	assert settings.generation.garment.mask_dilation_px == 80
+	assert settings.generation.garment.sam.model_type == "vit_h"
+
+
 def test_lora_entry_config_rejects_reserved_adapter_name():
 	with pytest.raises(ValidationError):
 		LoraEntryConfig(adapter_name="faceid", source="some/repo")

@@ -5,13 +5,15 @@ import pytest
 from app.core.config import GenerationConfig, IdentityConfig, InstantIdConfig
 from app.generation.exceptions import NoRendererAvailableError
 from app.generation.encode.video_writer import ImageioVideoEncoder
-from app.generation.factory import build_frame_renderer, build_generation_pipeline
+from app.generation.factory import build_frame_renderer, build_garment_renderer, build_generation_pipeline
 from app.generation.lora.manager import PeftLoraManager
 from app.generation.pipeline import GenerationPipeline
+from app.generation.renderer.garment_swap_renderer import GarmentSwapFrameRenderer
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
 from app.generation.temporal.passthrough import NullTemporalSmoother
 from app.identity.instantid.provider import InstantIdProvider
+from app.identity.segmentation.sam_provider import SamGarmentMaskGenerator
 
 
 class _FakeIdentityEngine:
@@ -61,4 +63,28 @@ def test_build_frame_renderer_usable_standalone_for_image2image():
 	renderer = build_frame_renderer(identity_engine, IdentityConfig(), GenerationConfig())
 
 	assert isinstance(renderer, Img2ImgFrameRenderer)
+	assert isinstance(renderer._lora_manager, PeftLoraManager)
+
+
+def test_build_garment_renderer_raises_without_face_adapter():
+	identity_engine = _FakeIdentityEngine(face_adapter=None)
+
+	with pytest.raises(NoRendererAvailableError):
+		build_garment_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+
+
+def test_build_garment_renderer_rejects_instantid():
+	identity_engine = _FakeIdentityEngine(face_adapter=InstantIdProvider(InstantIdConfig()))
+
+	with pytest.raises(NoRendererAvailableError):
+		build_garment_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+
+
+def test_build_garment_renderer_wires_sam_mask_generator():
+	identity_engine = _FakeIdentityEngine(face_adapter=object())
+
+	renderer = build_garment_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+
+	assert isinstance(renderer, GarmentSwapFrameRenderer)
+	assert isinstance(renderer._mask_generator, SamGarmentMaskGenerator)
 	assert isinstance(renderer._lora_manager, PeftLoraManager)

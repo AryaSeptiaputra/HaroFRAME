@@ -36,6 +36,13 @@
 # Restoration extra (gfpgan/basicsr/facexlib) SENGAJA tidak di-bake di image ini.
 # Kalau dibutuhkan, install manual di dalam container:
 #   pip install -e ".[restoration]"
+#
+# Garment-swap extra (segment-anything, untuk mode Garment-Swap di
+# interactive_generate.py) SENGAJA juga tidak di-bake -- checkpoint SAM besar
+# (375MB-2.6GB) dan opsional. Install manual di dalam container:
+#   pip install -e ".[garment]"
+# lalu unduh checkpoint SAM ke HAROFRAME_GENERATION__GARMENT__SAM_CHECKPOINT_PATH
+# (lihat VAST_GUIDE.md).
 
 FROM python:3.11-slim
 

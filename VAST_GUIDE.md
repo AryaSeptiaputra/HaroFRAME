@@ -186,3 +186,9 @@ sebelum push ke vast.ai.
 - **`ModelLoadError: gfpgan (and its basicsr/facexlib dependencies) are not
   installed`** -- disengaja, extra `restoration` tidak di-bake di image
   default. Install manual: `pip install -e ".[restoration]"`.
+- **`ModelLoadError: segment-anything is not installed`** (mode Garment-Swap
+  di `interactive_generate.py`) -- disengaja, extra `garment` tidak di-bake di
+  image default. Install manual: `pip install -e ".[garment]"`, lalu unduh
+  sebuah checkpoint SAM (mis. `sam_vit_l_0b3195.pth` dari
+  `https://dl.fbaipublicfiles.com/segment_anything/`) dan set
+  `HAROFRAME_GENERATION__GARMENT__SAM_CHECKPOINT_PATH` ke path-nya.
