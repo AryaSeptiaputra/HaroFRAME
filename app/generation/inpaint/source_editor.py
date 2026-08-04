@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -18,6 +19,34 @@ _TORCH_DTYPES = {
 	"bf16": torch.bfloat16,
 	"fp32": torch.float32,
 }
+
+# SDXL is trained around 1024x1024. Rendering much above that costs VRAM
+# superlinearly and tends to duplicate limbs and faces.
+_SDXL_PIXEL_BUDGET = 1024 * 1024
+
+
+def sdxl_working_size(size: tuple[int, int]) -> tuple[int, int]:
+	"""Render size for stage 1: the source's aspect ratio, scaled down to SDXL's
+	native pixel budget, each side a multiple of 8. Never scales *up*.
+
+	This has to be passed to the pipeline explicitly. diffusers no longer
+	defaults ``height``/``width`` to the UNet's sample size, and it preprocesses
+	the init image and the control image through separate processors -- so
+	leaving both None lets the init image keep the photo's own size while the
+	pose control image keeps whatever controlnet_aux emitted (512px), and the
+	two disagree inside the ControlNet:
+
+	    RuntimeError: The size of tensor a (228) must match the size of
+	    tensor b (64) at non-singleton dimension 3
+	"""
+	width, height = size
+	scale = min(1.0, math.sqrt(_SDXL_PIXEL_BUDGET / float(width * height)))
+	# Round *down* to the grid, so the budget is an actual ceiling -- rounding to
+	# nearest can push a scaled-down image back over it.
+	return (
+		max(8, int(width * scale) // 8 * 8),
+		max(8, int(height * scale) // 8 * 8),
+	)
 
 
 class InpaintSourceEditor:
@@ -117,11 +146,16 @@ class InpaintSourceEditor:
 		pipeline = self._ensure_pipeline()
 		generator = torch.Generator(device=self._identity_config.device).manual_seed(seed)
 
+		work_width, work_height = sdxl_working_size(source_image.size)
 		call_kwargs: dict[str, Any] = dict(
 			prompt=effective_prompt,
 			negative_prompt=negative_prompt or self._config.negative_prompt,
 			image=source_image,
 			mask_image=garment_mask.mask,
+			# Explicit, so the init image, the mask and the pose control image are
+			# all resized to the same grid -- see sdxl_working_size().
+			height=work_height,
+			width=work_width,
 			strength=self._config.strength if strength is None else strength,
 			guidance_scale=self._config.guidance_scale,
 			num_inference_steps=self._config.num_inference_steps,
@@ -132,8 +166,10 @@ class InpaintSourceEditor:
 			call_kwargs["controlnet_conditioning_scale"] = self._config.pose_conditioning_scale
 
 		edited = pipeline(**call_kwargs).images[0]
-		# SDXL rounds its working resolution to a multiple of 8; restore the exact
-		# source size so the caller's face bbox and motion plan stay valid.
+		# Stage 1 renders at the SDXL-sized grid above, so for a large photo this
+		# scales back up. Restoring the exact source size is not cosmetic: the
+		# caller's face bbox (pixel coords from the original) and motion plan both
+		# assume it.
 		if edited.size != source_image.size:
 			edited = edited.resize(source_image.size, Image.LANCZOS)
 		return edited

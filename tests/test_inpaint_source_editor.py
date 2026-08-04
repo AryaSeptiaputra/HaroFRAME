@@ -5,7 +5,7 @@ from PIL import Image
 
 from app.core.config import IdentityConfig, InpaintConfig
 from app.generation.exceptions import SourceEditError
-from app.generation.inpaint.source_editor import InpaintSourceEditor
+from app.generation.inpaint.source_editor import InpaintSourceEditor, sdxl_working_size
 from app.identity.controlnet.provider.pose_dwpose import DwPoseConditioner
 from app.identity.exceptions import ModelLoadError
 from app.identity.segmentation.interfaces import GarmentMask, SamPromptSet
@@ -155,6 +155,38 @@ def test_edit_generates_mask_before_loading_the_pipeline(mocker):
 		editor.edit(Image.new("RGB", (8, 8)), seed=1)
 
 	from_pretrained.assert_not_called()
+
+
+def test_sdxl_working_size_leaves_small_images_alone():
+	assert sdxl_working_size((768, 512)) == (768, 512)
+
+
+def test_sdxl_working_size_scales_large_images_into_the_budget():
+	# A 1824px phone photo is what produced "tensor a (228) vs tensor b (64)".
+	width, height = sdxl_working_size((1824, 1216))
+
+	assert width * height <= 1024 * 1024
+	assert abs((width / height) - (1824 / 1216)) < 0.02
+
+
+@pytest.mark.parametrize("size", [(1824, 1216), (4000, 3000), (999, 733), (100, 4000)])
+def test_sdxl_working_size_always_lands_on_the_multiple_of_eight_grid(size):
+	width, height = sdxl_working_size(size)
+
+	assert width % 8 == 0 and height % 8 == 0
+	assert width >= 8 and height >= 8
+
+
+def test_edit_passes_an_explicit_matching_height_and_width(mocker):
+	# Without these the pipeline preprocesses the init image and the pose control
+	# image separately, and they disagree inside the ControlNet.
+	config = InpaintConfig(enabled=True, prompt="p", use_pose_controlnet=False)
+	editor, fake_pipeline, _ = _editor(mocker, config)
+
+	editor.edit(Image.new("RGB", (1824, 1216)), seed=1)
+
+	kwargs = fake_pipeline.call_kwargs
+	assert (kwargs["width"], kwargs["height"]) == sdxl_working_size((1824, 1216))
 
 
 def test_edit_builds_pipeline_once_and_reuses_it(mocker):
