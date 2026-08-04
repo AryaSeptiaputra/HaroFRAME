@@ -5,7 +5,8 @@ from PIL import Image
 
 from app.core.config import IdentityConfig, InpaintConfig
 from app.generation.exceptions import SourceEditError
-from app.generation.inpaint.source_editor import InpaintSourceEditor, sdxl_working_size
+from app.generation.inpaint.source_editor import InpaintSourceEditor
+from app.generation.resolution import sdxl_working_size
 from app.identity.controlnet.provider.pose_dwpose import DwPoseConditioner
 from app.identity.exceptions import ModelLoadError
 from app.identity.segmentation.interfaces import GarmentMask, SamPromptSet
@@ -197,3 +198,47 @@ def test_edit_builds_pipeline_once_and_reuses_it(mocker):
 	editor.edit(Image.new("RGB", (8, 8)), seed=2)
 
 	from_pretrained.assert_called_once()
+
+
+def test_release_drops_the_pipeline_so_it_rebuilds_on_next_use(mocker):
+	# Stage 1 and stage 2 never overlap; holding both pipelines exhausts a 24GB card.
+	config = InpaintConfig(enabled=True, prompt="p", use_pose_controlnet=False)
+	editor, _, from_pretrained = _editor(mocker, config)
+
+	editor.edit(Image.new("RGB", (8, 8)), seed=1)
+	editor.release()
+	editor.edit(Image.new("RGB", (8, 8)), seed=2)
+
+	assert from_pretrained.call_count == 2
+
+
+def test_release_cascades_to_the_pose_conditioner_and_mask_generator(mocker):
+	class _ReleasableMaskGenerator(_FakeMaskGenerator):
+		def __init__(self):
+			super().__init__()
+			self.released = False
+
+		def release(self):
+			self.released = True
+
+	mocker.patch.object(DwPoseConditioner, "ensure_controlnet", return_value=object())
+	mocker.patch.object(DwPoseConditioner, "preprocess", return_value=Image.new("RGB", (8, 8)))
+	config = InpaintConfig(enabled=True, prompt="p", use_pose_controlnet=True)
+	mask_generator = _ReleasableMaskGenerator()
+	editor, _, _ = _editor(mocker, config, mask_generator=mask_generator)
+	editor.edit(Image.new("RGB", (8, 8)), seed=1)
+	editor._pose_conditioner._controlnet = object()
+	editor._pose_conditioner._detector = object()
+
+	editor.release()
+
+	assert mask_generator.released
+	assert editor._pose_conditioner._controlnet is None
+	assert editor._pose_conditioner._detector is None
+
+
+def test_release_is_safe_before_anything_was_built(mocker):
+	config = InpaintConfig(enabled=True, prompt="p", use_pose_controlnet=False)
+	editor, _, _ = _editor(mocker, config)
+
+	editor.release()  # must not raise

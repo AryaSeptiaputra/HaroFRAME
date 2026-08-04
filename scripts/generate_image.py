@@ -123,6 +123,8 @@ def main() -> int:
 				seed=seed,
 				strength=args.inpaint_strength,
 			)
+			# Free stage 1's pipeline before stage 2 builds its own.
+			source_editor.release()
 		rendered = renderer.render(
 			render_source,
 			reference=reference,

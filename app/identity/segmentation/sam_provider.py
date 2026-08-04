@@ -60,6 +60,12 @@ class SamGarmentMaskGenerator:
 		self._predictor = SamPredictor(sam)
 		return self._predictor
 
+	def release(self) -> None:
+		"""Drop the SAM predictor and the pose detector behind it, both rebuilt
+		lazily on next use. Called once the stage-1 mask is no longer needed."""
+		self._predictor = None
+		self._pose_conditioner.release()
+
 	def generate_mask(self, image: Image.Image) -> GarmentMask:
 		keypoints = self._pose_conditioner.detect_body_keypoints(image)
 		prompt_set = garment_region_prompts(

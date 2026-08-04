@@ -434,6 +434,13 @@ docker compose down
 - **`ModelLoadError: gfpgan (and its basicsr/facexlib dependencies) are not
   installed`** -- disengaja, extra `restoration` tidak diinstal otomatis.
   Install manual: `pip install -e ".[restoration]"`.
+- **`torch.OutOfMemoryError: CUDA out of memory`** -- dua hal sudah diperbaiki
+  di kode (tahap 1 melepas VRAM-nya sebelum tahap 2 mulai, dan tahap 2 tidak
+  lagi merender pada ukuran foto penuh). Kalau masih kena di kartu 24GB:
+  kecilkan foto sumber, atau jalankan dengan
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` untuk mengurangi
+  fragmentasi. Pastikan juga tidak ada proses generate lain yang masih hidup --
+  `nvidia-smi` menunjukkan siapa yang memegang memori.
 - **`ValueError: PEFT backend is required for this method.`** -- `peft` belum
   terpasang (atau lebih tua dari `MIN_PEFT_VERSION` milik diffusers). Sekarang
   sudah jadi dependensi inti, jadi cukup pasang ulang:

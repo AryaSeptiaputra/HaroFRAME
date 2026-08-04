@@ -176,3 +176,42 @@ def test_render_passes_structure_hint_when_depth_enabled(mocker):
 	assert structure is not None
 	assert structure.pose_image is None
 	assert structure.depth_image is warped
+
+
+def test_render_downscales_an_oversized_frame_to_the_sdxl_budget(mocker):
+	# SDXL img2img has no height/width parameters -- it reads its resolution off
+	# the init image -- so an 1824px phone photo is denoised at 1824px and
+	# exhausts a 24GB card. Downscaling has to happen before the call.
+	from app.generation.resolution import sdxl_working_size
+
+	fake_pipeline = _FakePipeline()
+	mocker.patch(
+		"diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained", return_value=fake_pipeline
+	)
+	renderer = Img2ImgFrameRenderer(_FakeIdentityEngine(), IdentityConfig(device="cpu"), RenderConfig())
+
+	renderer.render(
+		Image.new("RGB", (1824, 1216)),
+		reference=_reference(),
+		prompt="p",
+		negative_prompt="",
+		seed=1,
+		frame_index=0,
+	)
+
+	assert fake_pipeline.call_kwargs["image"].size == sdxl_working_size((1824, 1216))
+
+
+def test_render_leaves_an_already_small_frame_untouched(mocker):
+	fake_pipeline = _FakePipeline()
+	mocker.patch(
+		"diffusers.StableDiffusionXLImg2ImgPipeline.from_pretrained", return_value=fake_pipeline
+	)
+	renderer = Img2ImgFrameRenderer(_FakeIdentityEngine(), IdentityConfig(device="cpu"), RenderConfig())
+	frame = Image.new("RGB", (768, 512))
+
+	renderer.render(
+		frame, reference=_reference(), prompt="p", negative_prompt="", seed=1, frame_index=0
+	)
+
+	assert fake_pipeline.call_kwargs["image"] is frame

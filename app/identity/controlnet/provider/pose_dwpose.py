@@ -49,6 +49,15 @@ class DwPoseConditioner:
 				) from exc
 		return self._detector
 
+	def release(self) -> None:
+		"""Drop the cached detector and ControlNet so their VRAM comes back.
+
+		Both are rebuilt lazily on next use, so this is safe to call whenever the
+		caller knows it is done with pose conditioning for now.
+		"""
+		self._detector = None
+		self._controlnet = None
+
 	def ensure_controlnet(self):
 		if self._controlnet is not None:
 			return self._controlnet

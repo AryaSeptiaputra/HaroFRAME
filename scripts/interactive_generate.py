@@ -563,6 +563,8 @@ class GenerationQueueManager:
 			render_source = source_editor.edit(
 				source_image, negative_prompt=job.negative_prompt, seed=seed
 			)
+			# Free stage 1's pipeline before stage 2 builds its own.
+			source_editor.release()
 		rendered = renderer.render(
 			render_source,
 			reference=reference,

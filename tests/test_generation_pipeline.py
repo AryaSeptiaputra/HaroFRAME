@@ -247,3 +247,37 @@ def test_generate_skips_encoding_without_encoder(tmp_path):
 	result = pipeline.generate(GenerationRequest(reference=_reference(), prompt="x"), output_path=tmp_path / "out.mp4")
 
 	assert result.output_path is None
+
+
+def test_generate_releases_the_source_editor_before_rendering():
+	# Stage 1's pipeline is dead weight during stage 2, and the two together do
+	# not fit on a 24GB card.
+	class _ReleasingEditor(_FakeSourceEditor):
+		def __init__(self):
+			super().__init__()
+			self.released_after = None
+
+		def release(self):
+			self.released_after = len(self.calls)
+
+	editor = _ReleasingEditor()
+	renderer = _FakeFrameRenderer()
+	pipeline = GenerationPipeline(
+		_FakeIdentityEngine(), _FakeMotionPlanner(num_frames=2), _FakeFrameWarper(), renderer,
+		source_editor=editor,
+	)
+
+	pipeline.generate(GenerationRequest(reference=_reference(), prompt="x", inpaint_prompt="p"))
+
+	assert editor.released_after == 1
+	assert len(renderer.render_calls) == 2
+
+
+def test_generate_tolerates_a_source_editor_without_release():
+	# release() is an optional part of the SourceEditor protocol.
+	pipeline = GenerationPipeline(
+		_FakeIdentityEngine(), _FakeMotionPlanner(), _FakeFrameWarper(), _FakeFrameRenderer(),
+		source_editor=_FakeSourceEditor(),
+	)
+
+	pipeline.generate(GenerationRequest(reference=_reference(), prompt="x", inpaint_prompt="p"))

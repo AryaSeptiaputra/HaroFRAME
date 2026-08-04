@@ -85,6 +85,11 @@ class GenerationPipeline:
 				negative_prompt=request.negative_prompt,
 				seed=seed,
 			)
+			# Hand stage 1's VRAM back before the renderer asks for its own -- the
+			# two never overlap, and holding both exhausts a 24GB card.
+			release = getattr(self._source_editor, "release", None)
+			if callable(release):
+				release()
 
 		motion_spec = request.motion
 		if motion_spec.face_bbox is None and reference.fused_embedding is not None:

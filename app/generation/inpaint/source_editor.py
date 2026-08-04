@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math
+import gc
 from typing import Any
 
 import torch
@@ -13,40 +13,13 @@ from app.identity.sdxl_pipeline_loader import load_sdxl_pipeline
 from app.identity.segmentation.interfaces import GarmentMaskGenerator
 from app.generation.exceptions import SourceEditError
 from app.generation.lora.interfaces import LoraManager
+from app.generation.resolution import sdxl_working_size
 
 _TORCH_DTYPES = {
 	"fp16": torch.float16,
 	"bf16": torch.bfloat16,
 	"fp32": torch.float32,
 }
-
-# SDXL is trained around 1024x1024. Rendering much above that costs VRAM
-# superlinearly and tends to duplicate limbs and faces.
-_SDXL_PIXEL_BUDGET = 1024 * 1024
-
-
-def sdxl_working_size(size: tuple[int, int]) -> tuple[int, int]:
-	"""Render size for stage 1: the source's aspect ratio, scaled down to SDXL's
-	native pixel budget, each side a multiple of 8. Never scales *up*.
-
-	This has to be passed to the pipeline explicitly. diffusers no longer
-	defaults ``height``/``width`` to the UNet's sample size, and it preprocesses
-	the init image and the control image through separate processors -- so
-	leaving both None lets the init image keep the photo's own size while the
-	pose control image keeps whatever controlnet_aux emitted (512px), and the
-	two disagree inside the ControlNet:
-
-	    RuntimeError: The size of tensor a (228) must match the size of
-	    tensor b (64) at non-singleton dimension 3
-	"""
-	width, height = size
-	scale = min(1.0, math.sqrt(_SDXL_PIXEL_BUDGET / float(width * height)))
-	# Round *down* to the grid, so the budget is an actual ceiling -- rounding to
-	# nearest can push a scaled-down image back over it.
-	return (
-		max(8, int(width * scale) // 8 * 8),
-		max(8, int(height * scale) // 8 * 8),
-	)
 
 
 class InpaintSourceEditor:
@@ -173,3 +146,25 @@ class InpaintSourceEditor:
 		if edited.size != source_image.size:
 			edited = edited.resize(source_image.size, Image.LANCZOS)
 		return edited
+
+	def release(self) -> None:
+		"""Drop everything stage 1 holds on the GPU.
+
+		Stage 1 finishes entirely before stage 2 begins, so its inpaint pipeline
+		(~7GB), the pose ControlNet (~2.5GB) and SAM stay resident for no reason
+		while the renderer tries to allocate. On a 24GB card that is the
+		difference between running and torch.OutOfMemoryError.
+
+		Callers that run one generation then move on should call this; the cost is
+		that a *batch* reloads these weights per item, which is why it is not done
+		inside edit() itself.
+		"""
+		self._pipeline = None
+		if self._pose_conditioner is not None:
+			self._pose_conditioner.release()
+		release = getattr(self._mask_generator, "release", None)
+		if callable(release):
+			release()
+		gc.collect()
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()

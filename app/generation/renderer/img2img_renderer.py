@@ -12,6 +12,7 @@ from app.identity.interfaces import IdentityReference, StructureHint
 from app.identity.sdxl_pipeline_loader import load_sdxl_pipeline
 from app.generation.interfaces import RenderedFrame
 from app.generation.lora.interfaces import LoraManager
+from app.generation.resolution import sdxl_working_size
 
 _TORCH_DTYPES = {
 	"fp16": torch.float16,
@@ -81,6 +82,13 @@ class Img2ImgFrameRenderer:
 		strength: float | None = None,
 	) -> RenderedFrame:
 		pipeline = self._ensure_pipeline()
+		# StableDiffusionXLImg2ImgPipeline takes no height/width -- it reads its
+		# resolution straight off the init image (latents.shape[-2:]). So a 1824px
+		# phone photo is denoised at 1824px, which is both far outside SDXL's
+		# trained range and what exhausts a 24GB card. Downscale here instead.
+		working_size = sdxl_working_size(warped_frame.size)
+		if warped_frame.size != working_size:
+			warped_frame = warped_frame.resize(working_size, Image.LANCZOS)
 		controlnet_cfg = self._identity_config.controlnet
 		structure = None
 		if controlnet_cfg.pose_enabled or controlnet_cfg.depth_enabled:

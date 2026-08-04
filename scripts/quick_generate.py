@@ -157,6 +157,9 @@ def main() -> int:
 		if source_editor is not None:
 			print("stage 1/2: inpainting garment/body region ...")
 			render_source = source_editor.edit(source_image, negative_prompt=args.negative, seed=seed)
+			# Free stage 1's pipeline before stage 2 builds its own; both at once
+			# does not fit on a 24GB card.
+			source_editor.release()
 			print("stage 2/2: rendering ...")
 		rendered = renderer.render(
 			render_source,
