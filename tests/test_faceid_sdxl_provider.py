@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
+import torch
 
 from app.core.config import IpAdapterConfig
-from app.identity.exceptions import ModelLoadError
+from app.identity.exceptions import ModelLoadError, NoFaceDetectedError
+from app.identity.interfaces import FaceEmbedding, IdentityReference
 from app.identity.ipadapter.provider.faceid_sdxl import FaceIdSdxlProvider
 
 
 class _FakePipeline:
-	def __init__(self):
+	def __init__(self, dtype=torch.float16):
 		self.ip_adapter_calls = []
 		self.lora_calls = []
 		self.scales = []
+		self.dtype = dtype
 
 	def load_ip_adapter(self, repo_id, **kwargs):
 		self.ip_adapter_calls.append((repo_id, kwargs))
@@ -99,3 +103,68 @@ def test_load_is_idempotent_on_one_provider_instance():
 def test_load_rejects_a_pipeline_without_ip_adapter_support():
 	with pytest.raises(ModelLoadError):
 		FaceIdSdxlProvider(IpAdapterConfig()).load(object())
+
+
+# --- build_conditioning: the shape contract diffusers actually enforces --------
+
+
+def _reference(vector=None):
+	reference = IdentityReference(images=[])
+	reference.fused_embedding = FaceEmbedding(
+		vector=np.arange(512, dtype=np.float32) if vector is None else vector,
+		det_score=0.9,
+		bbox=(0.0, 0.0, 1.0, 1.0),
+	)
+	return reference
+
+
+def _embeds(provider):
+	return provider.build_conditioning(_reference()).adapter_kwargs["ip_adapter_image_embeds"][0]
+
+
+def test_conditioning_embeds_are_batch_num_images_embed_dim():
+	# MultiIPAdapterImageProjection documents [batch_size, num_images, embed_dim].
+	embeds = _embeds(FaceIdSdxlProvider(IpAdapterConfig()))
+
+	assert embeds.shape == (2, 1, 512)
+
+
+def test_conditioning_embeds_satisfy_check_inputs_rank():
+	# Regression: an unsqueeze gave (1, 512) and diffusers refused it with
+	# "`ip_adapter_image_embeds` has to be a list of 3D or 4D tensors but is 2D".
+	embeds = _embeds(FaceIdSdxlProvider(IpAdapterConfig()))
+
+	assert embeds.ndim in (3, 4)
+
+
+def test_conditioning_embeds_carry_a_zeroed_negative_half_first():
+	# prepare_ip_adapter_image_embeds() does single_image_embeds.chunk(2) under
+	# classifier-free guidance and takes the first half as the negative.
+	vector = np.arange(512, dtype=np.float32)
+
+	embeds = FaceIdSdxlProvider(IpAdapterConfig()).build_conditioning(
+		_reference(vector)
+	).adapter_kwargs["ip_adapter_image_embeds"][0]
+	negative, positive = embeds.chunk(2)
+
+	assert torch.count_nonzero(negative) == 0
+	assert torch.allclose(positive.reshape(-1), torch.from_numpy(vector))
+
+
+def test_conditioning_embeds_take_the_pipelines_dtype_after_load():
+	# diffusers moves supplied embeds to the pipeline device but never casts them.
+	provider = FaceIdSdxlProvider(IpAdapterConfig())
+	provider.load(_FakePipeline(dtype=torch.float16))
+
+	assert _embeds(provider).dtype == torch.float16
+
+
+def test_conditioning_embeds_stay_float32_before_any_load():
+	assert _embeds(FaceIdSdxlProvider(IpAdapterConfig())).dtype == torch.float32
+
+
+def test_build_conditioning_without_any_embedding_raises():
+	provider = FaceIdSdxlProvider(IpAdapterConfig())
+
+	with pytest.raises(NoFaceDetectedError):
+		provider.build_conditioning(IdentityReference(images=[]))

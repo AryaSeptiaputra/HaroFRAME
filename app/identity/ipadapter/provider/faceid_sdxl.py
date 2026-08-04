@@ -27,6 +27,7 @@ class FaceIdSdxlProvider:
 	def __init__(self, config: IpAdapterConfig) -> None:
 		self._config = config
 		self._loaded = False
+		self._dtype: Any = None
 
 	def load(self, pipeline: Any) -> None:
 		if self._loaded:
@@ -56,6 +57,10 @@ class FaceIdSdxlProvider:
 				self._config.repo_id, weight_name=self._config.lora_weight_name, adapter_name="faceid"
 			)
 		pipeline.set_ip_adapter_scale(self._config.scale)
+		# diffusers' prepare_ip_adapter_image_embeds() only moves supplied embeds
+		# to the pipeline's device -- it never casts them -- so build_conditioning()
+		# has to hand back the pipeline's own dtype or fp32 embeds meet an fp16 UNet.
+		self._dtype = getattr(pipeline, "dtype", None)
 		self._loaded = True
 
 	def build_conditioning(
@@ -76,10 +81,19 @@ class FaceIdSdxlProvider:
 				if len(reference.embeddings) == 1
 				else fuse_embeddings(reference.embeddings)
 			)
-		# diffusers' FaceID cross-attention expects a list of (1, embed_dim) tensors,
-		# one per adapter image; shape conventions can shift slightly across diffusers
-		# releases, so verify against the installed version if conditioning looks wrong.
-		embeds_tensor = torch.from_numpy(np.asarray(embedding.vector, dtype=np.float32)).unsqueeze(0)
+		# MultiIPAdapterImageProjection documents each tensor as
+		# [batch_size, num_images, embed_dim] -- so (2, 1, 512) here, not the bare
+		# (1, 512) an unsqueeze gives; check_inputs() rejects anything below 3D.
+		#
+		# The batch dim is 2 because prepare_ip_adapter_image_embeds() chunks it in
+		# half into (negative, positive) when classifier-free guidance is on: the
+		# zeroed negative half has to be supplied from here. That assumes CFG, which
+		# every guidance_scale default in this project uses; at guidance_scale <= 1
+		# diffusers would skip the chunk and read all of this as the positive half.
+		identity = torch.from_numpy(np.asarray(embedding.vector, dtype=np.float32)).reshape(1, 1, -1)
+		embeds_tensor = torch.cat([torch.zeros_like(identity), identity], dim=0)
+		if self._dtype is not None:
+			embeds_tensor = embeds_tensor.to(dtype=self._dtype)
 		return IdentityConditioning(
 			adapter_kwargs={"ip_adapter_image_embeds": [embeds_tensor]},
 			applied_adapters=[_PROVIDER_NAME],
@@ -90,3 +104,4 @@ class FaceIdSdxlProvider:
 		if hasattr(pipeline, "unload_ip_adapter"):
 			pipeline.unload_ip_adapter()
 		self._loaded = False
+		self._dtype = None
