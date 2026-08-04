@@ -17,6 +17,7 @@ class _FakePipeline:
 		self.ip_adapter_calls = []
 		self.lora_calls = []
 		self.scales = []
+		self.set_adapters_calls = []
 		self.dtype = dtype
 
 	def load_ip_adapter(self, repo_id, **kwargs):
@@ -27,6 +28,9 @@ class _FakePipeline:
 
 	def set_ip_adapter_scale(self, scale):
 		self.scales.append(scale)
+
+	def set_adapters(self, names, adapter_weights=None):
+		self.set_adapters_calls.append((list(names), list(adapter_weights or [])))
 
 
 def test_load_skips_the_image_encoder():
@@ -168,3 +172,21 @@ def test_build_conditioning_without_any_embedding_raises():
 
 	with pytest.raises(NoFaceDetectedError):
 		provider.build_conditioning(IdentityReference(images=[]))
+
+
+def test_load_applies_the_configured_companion_lora_weight():
+	# diffusers activates a freshly loaded adapter at 1.0; full strength on a
+	# merged photoreal checkpoint breaks skin into coloured speckle.
+	pipeline = _FakePipeline()
+
+	FaceIdSdxlProvider(IpAdapterConfig(lora_scale=0.45)).load(pipeline)
+
+	assert pipeline.set_adapters_calls == [(["faceid"], [0.45])]
+
+
+def test_load_sets_no_adapter_weight_when_there_is_no_companion_lora():
+	pipeline = _FakePipeline()
+
+	FaceIdSdxlProvider(IpAdapterConfig(lora_weight_name=None)).load(pipeline)
+
+	assert pipeline.set_adapters_calls == []

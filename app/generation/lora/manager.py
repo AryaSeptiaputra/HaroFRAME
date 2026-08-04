@@ -19,9 +19,19 @@ class PeftLoraManager:
 	existing adapter out of the call risks silently resetting/disabling it.
 	"""
 
-	def __init__(self, config: LoraConfig, cache_dir: Path) -> None:
+	def __init__(
+		self,
+		config: LoraConfig,
+		cache_dir: Path,
+		reserved_adapter_scales: dict[str, float] | None = None,
+	) -> None:
 		self._config = config
 		self._cache_dir = cache_dir
+		# Weights to reuse for adapters this manager did not load itself -- notably
+		# "faceid", whose weight belongs to IpAdapterConfig.lora_scale. Without
+		# this, folding it into the combined set_adapters() call would silently
+		# reset it to 1.0 as soon as the user adds any style LoRA.
+		self._reserved_adapter_scales = dict(reserved_adapter_scales or {})
 		self._loaded_adapter_names: list[str] = []
 
 	def load(self, pipeline: Any) -> None:
@@ -57,7 +67,7 @@ class PeftLoraManager:
 		for name in self._existing_adapter_names(pipeline):
 			if name not in merged_names:
 				merged_names.append(name)
-				merged_weights.append(1.0)
+				merged_weights.append(self._reserved_adapter_scales.get(name, 1.0))
 		return merged_names, merged_weights
 
 	@staticmethod

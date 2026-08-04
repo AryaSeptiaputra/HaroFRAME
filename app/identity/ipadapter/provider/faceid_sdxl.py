@@ -56,6 +56,12 @@ class FaceIdSdxlProvider:
 			pipeline.load_lora_weights(
 				self._config.repo_id, weight_name=self._config.lora_weight_name, adapter_name="faceid"
 			)
+			# diffusers activates a freshly loaded adapter at weight 1.0. Full
+			# strength on top of an already-merged photoreal checkpoint breaks skin
+			# into coloured speckle, so apply the configured weight explicitly.
+			set_adapters = getattr(pipeline, "set_adapters", None)
+			if callable(set_adapters):
+				set_adapters(["faceid"], adapter_weights=[self._config.lora_scale])
 		pipeline.set_ip_adapter_scale(self._config.scale)
 		# diffusers' prepare_ip_adapter_image_embeds() only moves supplied embeds
 		# to the pipeline's device -- it never casts them -- so build_conditioning()

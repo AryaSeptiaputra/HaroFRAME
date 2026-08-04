@@ -32,7 +32,11 @@ def build_frame_renderer(
 		raise NoRendererAvailableError(
 			"no face adapter configured; enable identity.ipadapter or identity.instantid"
 		)
-	lora_manager: LoraManager = PeftLoraManager(generation_config.lora, identity_config.cache_dir)
+	lora_manager: LoraManager = PeftLoraManager(
+		generation_config.lora,
+		identity_config.cache_dir,
+		reserved_adapter_scales={"faceid": identity_config.ipadapter.lora_scale},
+	)
 	if isinstance(identity_engine.face_adapter, InstantIdProvider):
 		return InstantIdFrameRenderer(
 			identity_engine,
@@ -63,7 +67,11 @@ def build_source_editor(
 	"""
 	if not generation_config.inpaint.enabled:
 		return None
-	lora_manager: LoraManager = PeftLoraManager(generation_config.lora, identity_config.cache_dir)
+	lora_manager: LoraManager = PeftLoraManager(
+		generation_config.lora,
+		identity_config.cache_dir,
+		reserved_adapter_scales={"faceid": identity_config.ipadapter.lora_scale},
+	)
 	mask_generator = SamGarmentMaskGenerator(generation_config.inpaint, device=identity_config.device)
 	return InpaintSourceEditor(
 		identity_config,

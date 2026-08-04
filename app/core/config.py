@@ -24,7 +24,15 @@ class IpAdapterConfig(BaseModel):
 	subfolder: str | None = None
 	weight_name: str = "ip-adapter-faceid_sdxl.bin"
 	lora_weight_name: str | None = "ip-adapter-faceid_sdxl_lora.safetensors"
+	# Cross-attention strength of the adapter itself.
 	scale: float = 0.6
+	# Weight of the FaceID *companion LoRA*, which is a separate lever from
+	# ``scale`` and used to be pinned at diffusers' 1.0 default with no way to
+	# lower it. At 1.0 on top of an already-merged photoreal checkpoint
+	# (RealVisXL, Juggernaut) it tends to break skin into high-frequency coloured
+	# speckle. Lower it before lowering ``scale`` if the texture looks wrong;
+	# raise it toward 1.0 if identity is too weak.
+	lora_scale: float = 0.6
 
 
 class InstantIdConfig(BaseModel):

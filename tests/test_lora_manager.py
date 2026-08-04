@@ -139,3 +139,20 @@ def test_active_adapter_names_returns_tracked_list():
 	manager.load(pipeline)
 
 	assert manager.active_adapter_names(pipeline) == ["anime"]
+
+
+def test_reserved_adapter_scale_is_preserved_when_folding_in_existing_adapters():
+	# The FaceID companion LoRA's weight belongs to IpAdapterConfig.lora_scale.
+	# Merging it into the combined set_adapters() call at a hardcoded 1.0 would
+	# silently undo that as soon as any style LoRA is added.
+	pipeline = _FakePipeline(existing_adapters={"unet": ["faceid"]})
+	manager = PeftLoraManager(
+		LoraConfig(entries=[LoraEntryConfig(adapter_name="style", source="some/repo")]),
+		Path(".cache"),
+		reserved_adapter_scales={"faceid": 0.45},
+	)
+
+	manager.load(pipeline)
+
+	names, weights = pipeline.set_adapters_calls[-1]
+	assert dict(zip(names, weights))["faceid"] == 0.45
