@@ -35,9 +35,17 @@ class DwPoseConditioner:
 				from controlnet_aux import OpenposeDetector
 
 				self._detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
-			except ImportError as exc:
+			except (ImportError, AttributeError) as exc:
+				# AttributeError, not just ImportError: controlnet_aux imports its
+				# mediapipe_face submodule eagerly and only tolerates mediapipe being
+				# *absent* (it warns and degrades). A mediapipe that is installed but
+				# broken -- as on some vast.ai template images -- gets past that guard
+				# and dies on `mp.solutions`, taking the whole package import with it.
 				raise ModelLoadError(
-					"controlnet_aux is not installed; cannot build a pose conditioner"
+					f"could not import a pose detector from controlnet_aux: {exc}. "
+					"If that mentions mediapipe, it is installed but broken in this "
+					"environment; nothing here uses mediapipe, so `pip uninstall -y "
+					"mediapipe` is the fix. Otherwise install controlnet_aux."
 				) from exc
 		return self._detector
 

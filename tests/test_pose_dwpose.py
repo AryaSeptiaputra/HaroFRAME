@@ -108,6 +108,25 @@ def test_detect_body_keypoints_raises_when_no_person_detected_pose_estimation():
 		conditioner.detect_body_keypoints(Image.new("RGB", (100, 200)))
 
 
+def test_ensure_detector_reports_a_broken_controlnet_aux_import_as_model_load_error(mocker):
+	# A half-installed mediapipe makes `import controlnet_aux` raise AttributeError
+	# rather than ImportError, which used to escape as a raw traceback.
+	import builtins
+
+	real_import = builtins.__import__
+
+	def _explode(name, *args, **kwargs):
+		if name == "controlnet_aux":
+			raise AttributeError("module 'mediapipe' has no attribute 'solutions'")
+		return real_import(name, *args, **kwargs)
+
+	mocker.patch.object(builtins, "__import__", side_effect=_explode)
+	conditioner = DwPoseConditioner(ControlNetConfig())
+
+	with pytest.raises(ModelLoadError, match="mediapipe"):
+		conditioner._ensure_detector()
+
+
 def test_detect_body_keypoints_raises_when_backend_exposes_neither_accessor():
 	conditioner = DwPoseConditioner(ControlNetConfig())
 	conditioner._detector = object()

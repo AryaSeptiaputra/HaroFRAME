@@ -434,6 +434,12 @@ docker compose down
 - **`ModelLoadError: gfpgan (and its basicsr/facexlib dependencies) are not
   installed`** -- disengaja, extra `restoration` tidak diinstal otomatis.
   Install manual: `pip install -e ".[restoration]"`.
+- **`AttributeError: module 'mediapipe' has no attribute 'solutions'`** (atau
+  `ModelLoadError: could not import a pose detector from controlnet_aux ...`) --
+  `mediapipe` terpasang di instance tapi rusak/tidak lengkap. `controlnet_aux`
+  toleran kalau mediapipe **tidak ada** (cuma memberi peringatan), tapi tidak
+  kalau ada setengah jadi. Proyek ini tidak memakai mediapipe sama sekali, jadi
+  obatnya: `pip uninstall -y mediapipe`.
 - **`ModelLoadError: segment-anything is not installed`** -- seharusnya tidak
   terjadi lagi (extra `garment` sudah ikut di `entrypoint.sh`/`Dockerfile`);
   kalau muncul, `entrypoint.sh` kemungkinan gagal/terlewat. Install manual:
