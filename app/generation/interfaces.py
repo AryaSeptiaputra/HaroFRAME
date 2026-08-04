@@ -58,13 +58,20 @@ class RenderedFrame:
 
 @dataclass(slots=True)
 class GenerationRequest:
-	"""Top-level request bracketing a GenerationPipeline.generate() call."""
+	"""Top-level request bracketing a GenerationPipeline.generate() call.
+
+	``inpaint_prompt`` describes what the stage-1 SourceEditor should put in the
+	masked garment/body region ("a red hoodie", "bare arms"); it is separate from
+	``prompt``, which drives the stage-2 pose/style render. ``None`` falls back to
+	InpaintConfig.prompt, and is ignored outright when no SourceEditor is wired.
+	"""
 
 	reference: IdentityReference
 	prompt: str
 	negative_prompt: str = ""
 	motion: CameraMotionSpec = field(default_factory=CameraMotionSpec)
 	seed: int | None = None
+	inpaint_prompt: str | None = None
 
 
 @dataclass(slots=True)
@@ -88,6 +95,32 @@ class FrameWarper(Protocol):
 	"""Applies a single FrameTransform to the source image, producing one warped frame."""
 
 	def warp(self, source_image: Image.Image, transform: FrameTransform) -> Image.Image:
+		...
+
+
+class SourceEditor(Protocol):
+	"""Stage-1 edit of the source photo, applied **once** before any motion
+	planning or frame rendering happens.
+
+	This is where garment swaps and newly-generated body regions live: an
+	inpaint pass rewrites part of the photo, and everything downstream (warp +
+	img2img/InstantID render, per frame) then treats the *edited* photo as its
+	source. Running once rather than per frame is both far cheaper and the only
+	way the edit stays consistent across a clip.
+
+	Returns an image the same size as ``source_image`` -- callers rely on that
+	to keep an already-computed face bbox and motion plan valid.
+	"""
+
+	def edit(
+		self,
+		source_image: Image.Image,
+		*,
+		prompt: str | None = None,
+		negative_prompt: str = "",
+		seed: int,
+		strength: float | None = None,
+	) -> Image.Image:
 		...
 
 

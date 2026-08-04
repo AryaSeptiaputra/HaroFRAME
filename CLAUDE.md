@@ -32,11 +32,14 @@ via the root `Dockerfile` — see "Deployment" below.
   Python 3.13 — sdist bug, no PyPI wheel — hence it's excluded from the Docker image
   by default): `pip install -e ".[restoration]"`
 - Manual end-to-end smoke tests (need real GPU/model weights, run on vast.ai):
-  - Identity module only: `python scripts/smoke_test_identity.py ref1.jpg [ref2.jpg ...] [--driving driving.jpg]`
-  - Generation, frames only (no video mux, dumps PNGs for visual QA): `python scripts/smoke_test_generation.py ref.jpg "a person smiling" --frames 16 --out outputs/smoke`
-  - Full pipeline, real video file (image2video): `python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --out outputs/clip.mp4`
-  - Single transformed image (image2image, no motion/video): `python scripts/generate_image.py ref.jpg "anime style portrait" --out outputs/ref_img2img.png`
-  - Batch over every photo in `test_images/` (gitignored — see `test_images/README.md`), one failure doesn't stop the rest: `python scripts/test_real_images.py --prompt "..."`
+  - **Quick path** (photo + the two stage prompts + a negative prompt, everything else from config defaults — the one to reach for when iterating on prompts): `python scripts/quick_generate.py ref.jpg "anime style portrait" -i "a red hoodie" -n "blurry"` — see "Quick path" below
+  - Every script below takes the same stage-1 pair — `--inpaint-prompt "sleeveless summer top"` and `--no-inpaint`. Since inpainting is **on by default**, one of the two is required: examples here use `--no-inpaint` only to stay single-stage
+  - Prefetch every configured weight (base checkpoint + LoRAs + SAM) without generating anything — `entrypoint.sh` runs this automatically, but it's useful by hand after changing models: `python scripts/prefetch_models.py [--skip-base|--skip-loras|--skip-sam]`
+  - Identity module only (no generation module, so no stage-1 flags): `python scripts/smoke_test_identity.py ref1.jpg [ref2.jpg ...] [--driving driving.jpg]`
+  - Generation, frames only (no video mux, dumps PNGs for visual QA): `python scripts/smoke_test_generation.py ref.jpg "a person smiling" --frames 16 --no-inpaint --out outputs/smoke`
+  - Full pipeline, real video file (image2video): `python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --inpaint-prompt "a red hoodie" --out outputs/clip.mp4`
+  - Single transformed image (image2image, no motion/video): `python scripts/generate_image.py ref.jpg "anime style portrait" --no-inpaint --out outputs/ref_img2img.png`
+  - Batch over every photo in `test_images/` (gitignored — see `test_images/README.md`), one failure doesn't stop the rest: `python scripts/test_real_images.py --prompt "..." --no-inpaint`
   - Interactive (`input()`-based, no new deps), install checkpoints/LoRAs then submit i2v/i2i jobs to a background queue: `python scripts/interactive_generate.py` — see "Interactive CLI" below
 - Build the vast.ai image: `docker build -t <registry-user>/haroframe:latest .` — full step-by-step deploy/run walkthrough (instance creation, env vars, getting photos on/videos off the instance, troubleshooting) is in `VAST_GUIDE.md`, not repeated here
 - Local Docker Desktop testing (not how vast.ai itself is configured): `docker compose up -d` after `cp .env.example .env` — see `docker-compose.yml`
@@ -52,8 +55,30 @@ rather than constructing `Settings()` directly outside of tests.
 `IdentityConfig` bundles five independent sub-configs (`face`, `ipadapter`,
 `instantid`, `controlnet`, `restoration`) plus top-level `device`/`dtype`/
 `cache_dir`/`hf_token`/`base_sdxl_model`. `GenerationConfig` (sibling field
-`Settings.generation`) bundles `motion`, `render`, `lora`, `temporal`, `output`
-sub-configs for the video pipeline — see "Generation module architecture" below.
+`Settings.generation`) bundles `motion`, `render`, `lora`, `temporal`, `output`,
+`inpaint` sub-configs for the video pipeline — see "Generation module
+architecture" below. `inpaint` (`InpaintConfig`, `enabled=True` by default)
+governs the stage-1 source edit; it is the only sub-config that gates a whole
+pipeline stage on/off. `apply_inpaint_overrides()` / `inpaint_prompt_missing()` /
+`INPAINT_PROMPT_REQUIRED_MESSAGE` live alongside `Settings` and exist so all five
+generation entry points under `scripts/` interpret `--inpaint-prompt`/
+`--no-inpaint` identically.
+
+`base_sdxl_model` defaults to **`SG161222/RealVisXL_V5.0`**, not stock
+`stabilityai/stable-diffusion-xl-base-1.0`: this pipeline exists to render
+people — stage 1 generates limbs and torsos from scratch, stage 2 has to hold a
+plausible pose — and base SDXL is markedly weaker at human anatomy than the
+photoreal community merges. Ungated, openrail++, diffusers layout with an fp16
+variant (~7GB vs ~14GB fp32). `RunDiffusion/Juggernaut-XL-v9` is the closest
+alternative; swapping is an env var, not a code change.
+
+`load_sdxl_pipeline()` asks for the **weight variant matching `dtype`**
+(`weight_variant_for()` → `fp16`/`bf16`/None) before falling back to the repo's
+default weights. This is not just a saving: repos like Juggernaut XL v9 ship
+*only* fp16 weights and fail outright without it. `scripts/prefetch_models.py`
+calls the same helper so it warms exactly the files the loader will later
+request — a variant mismatch would be a cache miss, i.e. a silent second
+multi-GB download at generation time.
 
 `base_sdxl_model` can be either a Hugging Face repo_id/local diffusers
 directory *or* a single-file checkpoint path (e.g. a `.safetensors` downloaded
@@ -127,6 +152,29 @@ the source photo along that trajectory, then re-rendered through the
 identity-preserving stack with a **fixed seed across all frames** for temporal
 continuity, then optionally smoothed, then muxed into a video file.
 
+**Inpainting is a pre-stage of i2i/i2v, not a parallel mode, and it is ON by
+default.** Changing someone's clothes or generating body regions happens in stage
+1 (`inpaint/`), which rewrites the *source photo* once; pose, motion and style
+then come entirely from the ordinary i2i/i2v stage rendering from that edited
+photo. There is no third "garment-swap" workflow with its own renderer —
+`GenerationConfig.inpaint.enabled` (default `True`) toggles a stage in front of
+the one pipeline. Two consequences worth knowing: stage 1 runs **once per
+generation, never per frame** (cheaper, and the only way the edit stays
+consistent across a clip), and it attaches **no face adapter at all** (the mask
+covers clothing/limbs, never the face), which is why it works under InstantID
+even though InstantID's vendored pipeline has no inpaint entry point.
+
+Because the stage is on by default, **a generation needs two prompts**: one for
+what the masked region becomes, one for the stage-2 render. Every script under
+`scripts/` therefore takes the same pair of flags — `--inpaint-prompt` (`-i` on
+`quick_generate.py`) and `--no-inpaint` — folded into config by the shared
+`apply_inpaint_overrides()` in `app/core/config.py`, with `inpaint_prompt_missing()`
+checked up front so an enabled-but-promptless run fails before any model load
+rather than at `SourceEditError` time. Default-on is also why the `garment` extra
+(segment-anything) is now part of the default install in `Dockerfile` and
+`entrypoint.sh`, unlike `restoration`, and why the SAM *checkpoint* is fetched by
+`scripts/prefetch_models.py` at instance setup.
+
 **The frame renderer branches on which face adapter `IdentityEngine` is
 holding** (dispatched once, in `app/generation/factory.py` — nowhere else
 branches on adapter type): the vendored InstantID pipeline has no img2img/
@@ -134,6 +182,20 @@ branches on adapter type): the vendored InstantID pipeline has no img2img/
 always denoises from pure noise), so it can't share one renderer implementation
 with the IP-Adapter family.
 
+- **`inpaint/`** — `InpaintSourceEditor` satisfies the `SourceEditor` protocol
+  (`interfaces.py`): `edit(source_image, *, prompt, negative_prompt, seed,
+  strength) -> Image`. Builds `StableDiffusionXLInpaintPipeline`, or
+  `StableDiffusionXLControlNetInpaintPipeline` when
+  `InpaintConfig.use_pose_controlnet` is set — that pose ControlNet guides the
+  anatomy of limb regions *being generated here*, and is deliberately independent
+  of `IdentityConfig.controlnet.pose_enabled` (structure conditioning for the
+  stage-2 render); coupling them would force one on to get the other. The mask
+  comes from `app/identity/segmentation/`'s `SamGarmentMaskGenerator` (SAM,
+  prompted from DWPose keypoints) — that package keeps its `Garment*` names since
+  it really does produce a garment-region mask. Returns an image of exactly the
+  source size, which is what keeps an already-computed face bbox and motion plan
+  valid. The `garment` extra is installed by default now that the stage is, and
+  the SAM checkpoint is prefetched at instance setup.
 - **`motion/`** — `CameraMotionPlanner` implementations. `KenBurns2DPlanner` is
   **face-aware**: it clamps zoom/pan per frame (exact geometry, not an
   approximation) so the face — from `FaceEmbedding.bbox` — never leaves the
@@ -180,19 +242,51 @@ with the IP-Adapter family.
   (bundled ffmpeg binary, no system install needed) — a **core** dependency,
   not optional, since video output is this module's whole job.
 - **`pipeline.py` / `factory.py`** — `GenerationPipeline` (the `IdentityEngine`
-  analog): plans motion → warps+renders each frame with one fixed seed →
-  optional temporal smoothing → optional encoding to `output_path`. Never
-  branches on adapter/motion-mode type itself — takes an already-built
-  `IdentityEngine` plus already-dispatched planner/warper/renderer/smoother/
-  encoder. `build_generation_pipeline(generation_config, identity_config,
-  identity_engine)` is the one place all the `isinstance`/mode dispatch happens.
-  `generate()` takes an optional `progress_callback(frames_done, total_frames)`,
-  invoked after each frame — used by the interactive CLI's queue status view,
-  not otherwise wired to anything. `factory.build_frame_renderer()` (same
-  isinstance dispatch, minus motion/encoding) is public on its own too, for
-  callers that want a single rendered frame with no video pipeline at all —
-  `scripts/generate_image.py` (image2image: renders once, directly from the
-  reference photo, no warp) is the one that does this.
+  analog): optional stage-1 source edit → plans motion → warps+renders each frame
+  with one fixed seed → optional temporal smoothing → optional encoding to
+  `output_path`. Never branches on adapter/motion-mode type itself — takes an
+  already-built `IdentityEngine` plus already-dispatched planner/warper/renderer/
+  smoother/encoder/source-editor. `build_generation_pipeline(generation_config,
+  identity_config, identity_engine)` is the one place all the `isinstance`/mode
+  dispatch happens. `generate()` takes an optional
+  `progress_callback(frames_done, total_frames)`, invoked after each frame — used
+  by the interactive CLI's queue status view, not otherwise wired to anything.
+  The stage-1 edit runs **after** `prepare_reference()` and never mutates
+  `reference.images`: identity stays locked to the original photo while only the
+  image being transformed is replaced. One seed covers the source edit and every
+  frame. `GenerationRequest.inpaint_prompt` (separate from `prompt`, which drives
+  the stage-2 render) falls back to `InpaintConfig.prompt` and is ignored when no
+  editor is wired.
+  `factory.build_frame_renderer()` (same isinstance dispatch, minus
+  motion/encoding) and `factory.build_source_editor()` (returns `None` when
+  `inpaint.enabled` is off; takes no `IdentityEngine` and imposes no adapter
+  restriction) are both public on their own too, for callers that want a single
+  rendered frame with no video pipeline at all — `scripts/generate_image.py`
+  (image2image: optional stage-1 edit, then renders once, no warp) uses both.
+
+## Quick path (`scripts/quick_generate.py`)
+
+Photo, the two stage prompts, a negative prompt — no other decisions. Everything
+the other entry points ask about (mode, strength, guidance, steps, seed,
+checkpoint, LoRA, ControlNet toggles, output filename) comes from `Settings`.
+Its fixed choices, and why:
+
+- **Always image2image.** One render instead of dozens of frames is what makes
+  prompt iteration cheap; `generate_video.py` is still the video path. There is
+  no mode flag on purpose — adding one reopens the decision this script exists
+  to remove.
+- **Two prompts**, since `generation.inpaint.enabled` defaults on: `-i` for stage
+  1, the positional prompt for stage 2. `--no-inpaint` collapses it back to one
+  prompt and drops the SAM checkpoint requirement.
+- **Random seed each run**, printed alongside a ready-to-paste
+  `generate_image.py --seed` command (carrying the stage-1 flag through), so a
+  good result is reproducible without the quick path itself growing a `--seed`.
+- **Output never overwrites**: `_unique_output_path()` bumps a counter
+  (`<stem>_quick.png`, `_quick_2.png`, …), since consecutive runs on one photo
+  are the normal usage.
+
+It prints every resolved default before rendering — the point is a short
+command, not a black box.
 
 ## Interactive CLI (`scripts/interactive_generate.py`)
 
@@ -203,9 +297,19 @@ Windows reads straight from the console via `msvcrt` and hangs instead of
 falling back when stdin is piped/redirected, unlike POSIX); (1)/(2) install
 one or more SDXL checkpoints and LoRAs into a *pool* (downloaded immediately,
 same four source kinds as above) without selecting what's used yet; then a
-looping main menu: submit a job (photo, prompt, i2v/i2i mode, mode-specific
-overrides, then *select* which pooled checkpoint/LoRA(s) to use for this job),
-check queue status, or exit.
+looping main menu: submit a job (photo, prompt, i2v/i2i mode, optional stage-1
+inpaint toggle + its params, mode-specific overrides, then *select* which pooled
+checkpoint/LoRA(s) to use for this job), check queue status, or exit.
+
+The inpaint toggle defaults to yes (following `InpaintConfig.enabled`) and is
+offered for **both** modes and **both** face-adapter branches; there is no
+separate garment mode and no InstantID exclusion (see the generation-module note
+above). Its answers are folded into the job's own `GenerationConfig.inpaint`
+rather than carried as extra `GenerationJob` fields, so i2v picks it up through
+`build_generation_pipeline()` and i2i through an explicit `build_source_editor()`
+call in `_run_i2i`. Answering *no* must write `enabled=False` back explicitly —
+inheriting `settings.generation.inpaint` unchanged would leave the stage on with
+an empty prompt and fail the job on the worker thread.
 
 `GenerationQueueManager` runs submitted `GenerationJob`s one at a time on a
 single background daemon thread (`queue.Queue` + `threading.Thread`) so
@@ -220,6 +324,36 @@ object each time) would silently skip re-attaching the adapter to later jobs'
 pipelines. Rebuilding per job is cheap (no model weights load at construction
 time). Exiting with jobs still queued/running warns first, since the daemon
 thread (and anything it's mid-render on) is dropped when the process exits.
+
+## Model prefetch (`scripts/prefetch_models.py`)
+
+Run by `entrypoint.sh` step 7 at instance setup so the first `generate()` doesn't
+stall for tens of GB mid-run. It warms three things, each independent (one
+failure is reported, the rest still run; exit 1 if any failed, which
+`entrypoint.sh` treats as a warning rather than aborting the instance):
+
+1. the base SDXL checkpoint — `DiffusionPipeline.download()` for a repo_id
+   (with the same variant `load_sdxl_pipeline()` will request), or
+   `resolve_model_source()` for a URL/Civitai/local single-file source
+2. every **enabled** `GenerationConfig.lora.entries` — `hf_hub_download` when the
+   entry names a `weight_name`, `snapshot_download` otherwise, or again
+   `resolve_model_source()` for URL sources
+3. the SAM checkpoint, when `inpaint.enabled` — downloaded via a `.partial` file
+   then renamed, so an interrupted run can't leave a truncated file that later
+   looks "already present"
+
+**It chooses nothing itself** — it only warms what `Settings` already says will
+be used, which is why the entry points and the prefetch can't disagree. Set
+`HAROFRAME_PREFETCH=false` to skip it entirely. LoRAs are configured as JSON in
+`HAROFRAME_GENERATION__LORA__ENTRIES` (pydantic-settings parses complex fields
+from JSON); no LoRA ships enabled by default.
+
+`SamConfig.checkpoint_path`'s default tracks `model_type` via a model validator —
+otherwise setting only `SAM__MODEL_TYPE=vit_l` would leave the path on the vit_b
+filename, so a machine that already has vit_b skips the download and then feeds
+vit_b weights to a vit_l architecture. An explicitly-set path always wins.
+`SAM_CHECKPOINT_FILENAMES` (config) and `_SAM_URLS` (prefetch) are kept in sync
+by a test that compares each URL's basename against the config default.
 
 ## Deployment
 

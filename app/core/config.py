@@ -53,19 +53,74 @@ class RestorationConfig(BaseModel):
 	upscale: int = 1
 
 
+SAM_CHECKPOINT_FILENAMES = {
+	"vit_b": "sam_vit_b_01ec64.pth",
+	"vit_l": "sam_vit_l_0b3195.pth",
+	"vit_h": "sam_vit_h_4b8939.pth",
+}
+
+
 class SamConfig(BaseModel):
+	"""SAM model used to derive the stage-1 garment/body mask.
+
+	Bigger backbones give better masks at more disk/VRAM: vit_b 375MB, vit_l
+	1.25GB, vit_h 2.56GB. scripts/prefetch_models.py downloads whichever is
+	configured during instance setup.
+	"""
+
 	model_type: Literal["vit_h", "vit_l", "vit_b"] = "vit_b"
-	checkpoint_path: Path = Path(".cache/models/sam/sam_vit_b_01ec64.pth")
+	checkpoint_path: Path = Path(".cache/models/sam") / SAM_CHECKPOINT_FILENAMES["vit_b"]
+
+	@model_validator(mode="after")
+	def _default_checkpoint_path_tracks_model_type(self) -> "SamConfig":
+		"""Keep the default filename in step with ``model_type``.
+
+		Without this, setting only SAM__MODEL_TYPE=vit_l leaves the path pointing
+		at the vit_b filename -- so a machine that already downloaded vit_b skips
+		the download and then feeds vit_b weights to a vit_l architecture, which
+		fails deep inside SAM with nothing pointing back at the config. An
+		explicitly-set path always wins.
+		"""
+		if "checkpoint_path" not in self.model_fields_set:
+			self.checkpoint_path = Path(".cache/models/sam") / SAM_CHECKPOINT_FILENAMES[self.model_type]
+		return self
 
 
-class GarmentSwapConfig(BaseModel):
+class InpaintConfig(BaseModel):
+	"""Stage 1 of the unified pipeline: edit the source photo's garment/body
+	region via SDXL inpainting, *before* the i2i/i2v stage renders pose+style
+	from the edited photo (see app/generation/inpaint/).
+
+	``enabled`` gates the whole stage and defaults to **on**: a generation is two
+	prompts by default, one for what the masked region becomes and one for the
+	stage-2 render. Turning it off (``--no-inpaint`` on the scripts, or
+	``HAROFRAME_GENERATION__INPAINT__ENABLED=false``) drops back to the
+	single-stage i2i/i2v behaviour. Because it is on by default, the ``garment``
+	extra is part of the default install (Dockerfile/entrypoint.sh) -- but the SAM
+	checkpoint itself is still a separate manual download, see VAST_GUIDE.md.
+
+	``prompt`` describes what the masked region should become ("sleeveless summer
+	top", "bare arms"). It has no default worth guessing, so an enabled stage with
+	an empty prompt is a configuration error the entry points catch up front (see
+	``inpaint_prompt_missing``) rather than a silent no-op; callers may also
+	override it per request.
+
+	``use_pose_controlnet``/``pose_conditioning_scale``/``pose_repo_id`` are
+	deliberately independent of IdentityConfig.controlnet's pose settings: this
+	one guides the anatomy of limb regions *being generated* here in stage 1,
+	that one is structure conditioning for the stage-2 img2img render. Coupling
+	them would force one to be silently enabled to get the other.
+	"""
+
+	enabled: bool = True
+	prompt: str = ""
 	sam: SamConfig = Field(default_factory=SamConfig)
 	mask_dilation_px: int = 40
 	mask_feather_px: int = 8
 	mask_min_confidence: float = 0.3
 	include_arms_in_mask: bool = True
 	include_legs_in_mask: bool = False
-	inpaint_strength: float = 0.85
+	strength: float = 0.85
 	guidance_scale: float = 6.0
 	num_inference_steps: int = 35
 	use_pose_controlnet: bool = True
@@ -153,7 +208,7 @@ class GenerationConfig(BaseModel):
 	lora: LoraConfig = Field(default_factory=LoraConfig)
 	temporal: TemporalConfig = Field(default_factory=TemporalConfig)
 	output: OutputConfig = Field(default_factory=OutputConfig)
-	garment: GarmentSwapConfig = Field(default_factory=GarmentSwapConfig)
+	inpaint: InpaintConfig = Field(default_factory=InpaintConfig)
 	seed: int | None = None
 
 
@@ -162,7 +217,14 @@ class IdentityConfig(BaseModel):
 	dtype: Literal["fp16", "bf16", "fp32"] = "fp16"
 	cache_dir: Path = Path(".cache/models")
 	hf_token: SecretStr | None = None
-	base_sdxl_model: str = "stabilityai/stable-diffusion-xl-base-1.0"
+	# RealVisXL V5.0 rather than stock stabilityai/stable-diffusion-xl-base-1.0:
+	# this pipeline's whole job is people -- stage 1 generates limbs and torsos
+	# from scratch, stage 2 has to hold a plausible pose -- and base SDXL is
+	# markedly weaker at human anatomy than the photoreal community merges.
+	# Ungated, openrail++, diffusers layout with an fp16 variant (~7GB).
+	# RunDiffusion/Juggernaut-XL-v9 is the closest alternative; swap via
+	# HAROFRAME_IDENTITY__BASE_SDXL_MODEL, no code change needed.
+	base_sdxl_model: str = "SG161222/RealVisXL_V5.0"
 
 	face: FaceConfig = Field(default_factory=FaceConfig)
 	ipadapter: IpAdapterConfig = Field(default_factory=IpAdapterConfig)
@@ -186,3 +248,35 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
 	return Settings()
+
+
+INPAINT_PROMPT_REQUIRED_MESSAGE = (
+	"inpainting is on but no prompt says what the masked garment/body region should "
+	"become. Pass --inpaint-prompt, set HAROFRAME_GENERATION__INPAINT__PROMPT, or turn "
+	"the stage off with --no-inpaint."
+)
+
+
+def apply_inpaint_overrides(
+	generation: GenerationConfig, *, prompt: str | None = None, disabled: bool = False
+) -> GenerationConfig:
+	"""Fold an entry point's ``--inpaint-prompt``/``--no-inpaint`` flags into a
+	GenerationConfig, returning the original object untouched when neither is given.
+
+	Shared by every script under scripts/ so the two stage-1 flags mean exactly the
+	same thing wherever they appear.
+	"""
+	updates: dict = {}
+	if disabled:
+		updates["enabled"] = False
+	if prompt:
+		updates["prompt"] = prompt
+	if not updates:
+		return generation
+	return generation.model_copy(update={"inpaint": generation.inpaint.model_copy(update=updates)})
+
+
+def inpaint_prompt_missing(generation: GenerationConfig) -> bool:
+	"""True when stage 1 would run but has nothing to inpaint toward. Entry points
+	check this so the run fails immediately instead of after a multi-GB model load."""
+	return generation.inpaint.enabled and not generation.inpaint.prompt

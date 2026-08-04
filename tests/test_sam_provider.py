@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from app.core.config import GarmentSwapConfig, SamConfig
+from app.core.config import InpaintConfig, SamConfig
 from app.identity.exceptions import ModelLoadError
 from app.identity.segmentation.interfaces import BodyKeypoints
 from app.identity.segmentation.sam_provider import SamGarmentMaskGenerator
@@ -44,7 +44,7 @@ def _install_fake_sam_module(mocker, *, predict_return):
 
 
 def test_generate_mask_raises_when_segment_anything_not_installed():
-	config = GarmentSwapConfig()
+	config = InpaintConfig()
 	generator = SamGarmentMaskGenerator(
 		config, device="cpu", pose_conditioner=_FakePoseConditioner(_keypoints())
 	)
@@ -55,7 +55,7 @@ def test_generate_mask_raises_when_segment_anything_not_installed():
 
 def test_generate_mask_raises_when_checkpoint_missing(mocker, tmp_path):
 	_install_fake_sam_module(mocker, predict_return=(np.zeros((1, 64, 64), dtype=bool), np.array([0.9]), None))
-	config = GarmentSwapConfig(sam=SamConfig(checkpoint_path=tmp_path / "missing.pth"))
+	config = InpaintConfig(sam=SamConfig(checkpoint_path=tmp_path / "missing.pth"))
 	generator = SamGarmentMaskGenerator(
 		config, device="cpu", pose_conditioner=_FakePoseConditioner(_keypoints())
 	)
@@ -73,7 +73,7 @@ def test_generate_mask_wires_prompts_and_postprocesses_best_mask(mocker, tmp_pat
 	scores = np.array([0.1, 0.9, 0.5])
 	predictor, _ = _install_fake_sam_module(mocker, predict_return=(raw_masks, scores, None))
 
-	config = GarmentSwapConfig(sam=SamConfig(checkpoint_path=checkpoint_path), mask_dilation_px=0, mask_feather_px=0)
+	config = InpaintConfig(sam=SamConfig(checkpoint_path=checkpoint_path), mask_dilation_px=0, mask_feather_px=0)
 	pose_conditioner = _FakePoseConditioner(_keypoints())
 	generator = SamGarmentMaskGenerator(config, device="cpu", pose_conditioner=pose_conditioner)
 
@@ -101,7 +101,7 @@ def test_generate_mask_reuses_predictor_across_calls(mocker, tmp_path):
 	raw_masks[0, 10:20, 10:20] = True
 	_, fake_module = _install_fake_sam_module(mocker, predict_return=(raw_masks, np.array([0.9]), None))
 
-	config = GarmentSwapConfig(sam=SamConfig(checkpoint_path=checkpoint_path))
+	config = InpaintConfig(sam=SamConfig(checkpoint_path=checkpoint_path))
 	generator = SamGarmentMaskGenerator(
 		config, device="cpu", pose_conditioner=_FakePoseConditioner(_keypoints())
 	)

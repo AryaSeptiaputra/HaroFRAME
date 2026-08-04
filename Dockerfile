@@ -33,16 +33,24 @@
 #   HAROFRAME_IDENTITY__IPADAPTER__ENABLED=true   (atau INSTANTID__ENABLED=true)
 #   dst. sesuai kebutuhan -- lihat IdentityConfig/GenerationConfig di app/core/config.py.
 #
+# Bobot model TIDAK di-bake ke image ini (ukurannya puluhan GB dan sering
+# diganti). Jalankan sekali di dalam container untuk mengunduh base checkpoint,
+# LoRA, dan checkpoint SAM sesuai config:
+#   python3 scripts/prefetch_models.py
+# Jalur on-start-script (entrypoint.sh) melakukan ini otomatis di step 7.
+#
 # Restoration extra (gfpgan/basicsr/facexlib) SENGAJA tidak di-bake di image ini.
 # Kalau dibutuhkan, install manual di dalam container:
 #   pip install -e ".[restoration]"
 #
-# Garment-swap extra (segment-anything, untuk mode Garment-Swap di
-# interactive_generate.py) SENGAJA juga tidak di-bake -- checkpoint SAM besar
-# (375MB-2.6GB) dan opsional. Install manual di dalam container:
-#   pip install -e ".[garment]"
-# lalu unduh checkpoint SAM ke HAROFRAME_GENERATION__GARMENT__SAM_CHECKPOINT_PATH
-# (lihat VAST_GUIDE.md).
+# Extra "garment" (segment-anything) SEKARANG ikut di-bake, tidak seperti
+# "restoration": tahap inpaint sudah default aktif
+# (GenerationConfig.inpaint.enabled), jadi tanpa paket ini image-nya rusak
+# begitu dipakai. Bobot checkpoint SAM-nya sendiri (375MB-2.6GB, pilihannya
+# vit_b/vit_l/vit_h) tidak di-bake tapi diunduh oleh scripts/prefetch_models.py
+# bersama base checkpoint dan LoRA (lihat catatan "Bobot model" di atas).
+# Kalau tidak butuh inpaint sama sekali: jalankan skrip dengan --no-inpaint,
+# atau set HAROFRAME_GENERATION__INPAINT__ENABLED=false.
 
 FROM python:3.11-slim
 
@@ -58,6 +66,6 @@ WORKDIR /workspace
 
 COPY . /workspace
 
-RUN pip install --no-cache-dir -e ".[gpu]"
+RUN pip install --no-cache-dir -e ".[gpu,garment]"
 
 CMD ["sleep", "infinity"]

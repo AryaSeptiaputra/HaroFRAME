@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from app.core.config import ControlNetConfig, GarmentSwapConfig
+from app.core.config import ControlNetConfig, InpaintConfig
 from app.identity.controlnet.provider.pose_dwpose import DwPoseConditioner
 from app.identity.exceptions import ModelLoadError
 from app.identity.segmentation.interfaces import GarmentMask
@@ -17,9 +17,10 @@ class SamGarmentMaskGenerator:
 	"""GarmentMaskGenerator backed by SAM (segment-anything).
 
 	Lazily-loaded, mirroring InsightFaceAnalyzer's/DepthEstimator's
-	lazy-load-on-first-use pattern: construction stays cheap when garment-swap
-	is never used, and SAM model weights load only on the first generate_mask()
-	call. Body-region prompts are derived from DWPose/OpenPose keypoints (see
+	lazy-load-on-first-use pattern: construction stays cheap when the stage-1
+	inpaint editor is never used, and SAM model weights load only on the first
+	generate_mask() call. Body-region prompts are derived from DWPose/OpenPose
+	keypoints (see
 	app.identity.controlnet.provider.pose_dwpose.detect_body_keypoints), via a
 	DwPoseConditioner instance owned by this class -- deliberately independent
 	of IdentityConfig.controlnet's pose_enabled toggle, which governs a
@@ -28,7 +29,7 @@ class SamGarmentMaskGenerator:
 
 	def __init__(
 		self,
-		config: GarmentSwapConfig,
+		config: InpaintConfig,
 		*,
 		device: str,
 		pose_conditioner: DwPoseConditioner | None = None,
@@ -52,7 +53,7 @@ class SamGarmentMaskGenerator:
 		if not checkpoint_path.is_file():
 			raise ModelLoadError(
 				f"SAM checkpoint not found at {checkpoint_path}; download one and set "
-				"HAROFRAME_GENERATION__GARMENT__SAM__CHECKPOINT_PATH (see VAST_GUIDE.md)"
+				"HAROFRAME_GENERATION__INPAINT__SAM__CHECKPOINT_PATH (see VAST_GUIDE.md)"
 			)
 		sam = sam_model_registry[self._config.sam.model_type](checkpoint=str(checkpoint_path))
 		sam.to(device=self._device)

@@ -13,6 +13,7 @@ from app.generation.interfaces import (
 	FrameWarper,
 	GenerationRequest,
 	GenerationResult,
+	SourceEditor,
 	TemporalSmoother,
 	VideoEncoder,
 )
@@ -21,8 +22,9 @@ _MAX_SEED = 2**31 - 1
 
 
 class GenerationPipeline:
-	"""Orchestrates one generate() call: motion planning -> per-frame warp+render
-	-> optional temporal smoothing -> optional video encoding.
+	"""Orchestrates one generate() call: optional stage-1 source edit (inpaint)
+	-> motion planning -> per-frame warp+render -> optional temporal smoothing
+	-> optional video encoding.
 
 	Analogous to IdentityEngine: holds one instance of each stage and never
 	branches on adapter type itself -- that dispatch lives entirely in
@@ -38,6 +40,7 @@ class GenerationPipeline:
 		*,
 		temporal_smoother: TemporalSmoother | None = None,
 		video_encoder: VideoEncoder | None = None,
+		source_editor: SourceEditor | None = None,
 	) -> None:
 		self._identity_engine = identity_engine
 		self._motion_planner = motion_planner
@@ -45,6 +48,7 @@ class GenerationPipeline:
 		self._frame_renderer = frame_renderer
 		self._temporal_smoother = temporal_smoother
 		self._video_encoder = video_encoder
+		self._source_editor = source_editor
 
 	def generate(
 		self,
@@ -65,14 +69,28 @@ class GenerationPipeline:
 		if reference.fused_embedding is None:
 			self._identity_engine.prepare_reference(reference)
 
+		seed = request.seed if request.seed is not None else random.randint(0, _MAX_SEED)
+
+		# Stage 1, once for the whole clip: rewrite the garment/body region of the
+		# source photo. Deliberately *after* prepare_reference() -- identity stays
+		# locked to the original, unedited photo -- and reference.images is left
+		# untouched so the face adapter keeps conditioning on it. The editor
+		# preserves image size, and the mask never covers the face, so the fused
+		# embedding's bbox stays valid against the edited photo below.
 		source_image = reference.images[0]
+		if self._source_editor is not None:
+			source_image = self._source_editor.edit(
+				source_image,
+				prompt=request.inpaint_prompt,
+				negative_prompt=request.negative_prompt,
+				seed=seed,
+			)
+
 		motion_spec = request.motion
 		if motion_spec.face_bbox is None and reference.fused_embedding is not None:
 			motion_spec = replace(motion_spec, face_bbox=reference.fused_embedding.bbox)
 
 		plan = self._motion_planner.plan(source_image.size, motion_spec)
-
-		seed = request.seed if request.seed is not None else random.randint(0, _MAX_SEED)
 
 		rendered_frames = []
 		total_frames = len(plan.transforms)

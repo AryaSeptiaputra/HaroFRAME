@@ -4,8 +4,15 @@ Wires Settings -> IdentityEngine -> GenerationPipeline -> an actual video file
 on disk. Requires real model weights and a GPU-capable environment (run on
 vast.ai, see CLAUDE.md) -- not runnable on the local dev machine.
 
+Generation is two-stage by default (generation.inpaint.enabled): a SAM-masked
+inpaint pass first changes the person's clothing or generates body regions --
+once, before any motion planning -- and the whole clip is then animated from the
+edited photo. So there are two prompts: --inpaint-prompt for stage 1, the
+positional prompt for stage 2. Pass --no-inpaint for a single-stage run.
+
 Usage:
-    python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --out outputs/clip.mp4
+    python scripts/generate_video.py ref.jpg "gentle breeze" --inpaint-prompt "a red hoodie"
+    python scripts/generate_video.py ref.jpg "a person smiling, gentle breeze" --no-inpaint --out outputs/clip.mp4
 """
 
 from __future__ import annotations
@@ -16,7 +23,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.core.config import get_settings
+from app.core.config import (
+	INPAINT_PROMPT_REQUIRED_MESSAGE,
+	apply_inpaint_overrides,
+	get_settings,
+	inpaint_prompt_missing,
+)
 from app.identity.exceptions import IdentityModuleError
 from app.identity.factory import build_identity_engine
 from app.identity.interfaces import IdentityReference
@@ -37,6 +49,18 @@ def _parse_args() -> argparse.Namespace:
 		"--frames", type=int, default=None, help="override frame count (default: fps * duration_seconds)"
 	)
 	parser.add_argument("--seed", type=int, default=None)
+	parser.add_argument(
+		"--inpaint-prompt",
+		type=str,
+		default=None,
+		help="stage-1 prompt: what the masked garment/body region should become "
+		"(default: generation.inpaint.prompt; required unless --no-inpaint)",
+	)
+	parser.add_argument(
+		"--no-inpaint",
+		action="store_true",
+		help="skip stage 1 and animate straight from the reference photo",
+	)
 	return parser.parse_args()
 
 
@@ -50,11 +74,18 @@ def main() -> int:
 		print("FAIL: no face adapter enabled (identity.ipadapter.enabled / identity.instantid.enabled)")
 		return 1
 
-	generation_pipeline = build_generation_pipeline(settings.generation, settings.identity, identity_engine)
+	generation_config = apply_inpaint_overrides(
+		settings.generation, prompt=args.inpaint_prompt, disabled=args.no_inpaint
+	)
+	if inpaint_prompt_missing(generation_config):
+		print(f"FAIL: {INPAINT_PROMPT_REQUIRED_MESSAGE}")
+		return 1
+
+	generation_pipeline = build_generation_pipeline(generation_config, settings.identity, identity_engine)
 
 	reference = IdentityReference(images=[Image.open(args.reference_image).convert("RGB")])
-	output_cfg = settings.generation.output
-	motion_cfg = settings.generation.motion
+	output_cfg = generation_config.output
+	motion_cfg = generation_config.motion
 	spec = CameraMotionSpec(
 		mode=motion_cfg.mode,
 		direction=motion_cfg.direction,
@@ -70,6 +101,8 @@ def main() -> int:
 		negative_prompt=args.negative_prompt,
 		motion=spec,
 		seed=args.seed,
+		# --inpaint-prompt already went into generation_config above; leaving this
+		# unset keeps one source of truth and lets InpaintConfig.prompt apply.
 	)
 
 	output_path = args.out

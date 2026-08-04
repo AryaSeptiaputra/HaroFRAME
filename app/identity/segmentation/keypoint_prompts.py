@@ -57,7 +57,7 @@ def garment_region_prompts(
 	if positive_points.shape[0] < 2:
 		raise ValueError(
 			f"only {positive_points.shape[0]} valid body keypoint(s) found (need at least 2) "
-			"to derive a garment-swap mask region"
+			"to derive a garment/body mask region"
 		)
 	negative_points = _valid_points_px(keypoints, _FACE_INDICES, target_size, min_score)
 

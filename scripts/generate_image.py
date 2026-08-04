@@ -10,11 +10,18 @@ Reuses the exact same identity engine and adapter-appropriate FrameRenderer
 (Img2ImgFrameRenderer for IP-Adapter, InstantIdFrameRenderer for InstantID) as
 the video pipeline -- see app.generation.factory.build_frame_renderer.
 
+Generation is two-stage by default (generation.inpaint.enabled): a SAM-masked
+inpaint pass first changes the person's clothing or generates body regions, and
+its output becomes the photo this img2img render works from. So there are two
+prompts -- --inpaint-prompt for stage 1, the positional prompt for stage 2. Pass
+--no-inpaint for a single-stage run straight from the reference photo.
+
 Needs real model weights and a GPU -- run this on vast.ai (see VAST_GUIDE.md),
 not on the local dev machine.
 
 Usage:
-    python scripts/generate_image.py ref.jpg "anime style portrait, studio lighting" --out outputs/ref_img2img.png
+    python scripts/generate_image.py ref.jpg "standing on a beach" --inpaint-prompt "sleeveless summer top"
+    python scripts/generate_image.py ref.jpg "anime style portrait, studio lighting" --no-inpaint --out outputs/ref_img2img.png
 """
 
 from __future__ import annotations
@@ -26,12 +33,17 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.core.config import get_settings
+from app.core.config import (
+	INPAINT_PROMPT_REQUIRED_MESSAGE,
+	apply_inpaint_overrides,
+	get_settings,
+	inpaint_prompt_missing,
+)
 from app.identity.exceptions import IdentityModuleError
 from app.identity.factory import build_identity_engine
 from app.identity.interfaces import IdentityReference
 from app.generation.exceptions import GenerationModuleError
-from app.generation.factory import build_frame_renderer
+from app.generation.factory import build_frame_renderer, build_source_editor
 
 _MAX_SEED = 2**31 - 1
 
@@ -49,6 +61,24 @@ def _parse_args() -> argparse.Namespace:
 		default=None,
 		help="img2img strength override (IP-Adapter branch only; ignored -- accepted-and-unused -- by InstantID)",
 	)
+	parser.add_argument(
+		"--inpaint-prompt",
+		type=str,
+		default=None,
+		help="stage-1 prompt: what the masked garment/body region should become "
+		"(default: generation.inpaint.prompt; required unless --no-inpaint)",
+	)
+	parser.add_argument(
+		"--inpaint-strength",
+		type=float,
+		default=None,
+		help="stage-1 inpaint strength override (default: generation.inpaint.strength)",
+	)
+	parser.add_argument(
+		"--no-inpaint",
+		action="store_true",
+		help="skip stage 1 and render straight from the reference photo",
+	)
 	return parser.parse_args()
 
 
@@ -62,20 +92,39 @@ def main() -> int:
 		print("FAIL: no face adapter enabled (identity.ipadapter.enabled / identity.instantid.enabled)")
 		return 1
 
+	generation_config = apply_inpaint_overrides(
+		settings.generation, prompt=args.inpaint_prompt, disabled=args.no_inpaint
+	)
+	if inpaint_prompt_missing(generation_config):
+		print(f"FAIL: {INPAINT_PROMPT_REQUIRED_MESSAGE}")
+		return 1
+
 	try:
-		renderer = build_frame_renderer(identity_engine, settings.identity, settings.generation)
+		renderer = build_frame_renderer(identity_engine, settings.identity, generation_config)
+		source_editor = build_source_editor(settings.identity, generation_config)
 	except GenerationModuleError as exc:
 		print(f"FAIL: {exc}")
 		return 1
 
 	source_image = Image.open(args.reference_image).convert("RGB")
+	# Identity comes from the *original* photo; only the image being transformed
+	# is replaced by the stage-1 edit below.
 	reference = IdentityReference(images=[source_image])
 	seed = args.seed if args.seed is not None else random.randint(0, _MAX_SEED)
 
 	try:
 		identity_engine.prepare_reference(reference)
+		render_source = source_image
+		if source_editor is not None:
+			print(f"stage 1: inpainting garment/body region -- {generation_config.inpaint.prompt!r}")
+			render_source = source_editor.edit(
+				source_image,
+				negative_prompt=args.negative_prompt,
+				seed=seed,
+				strength=args.inpaint_strength,
+			)
 		rendered = renderer.render(
-			source_image,
+			render_source,
 			reference=reference,
 			prompt=args.prompt,
 			negative_prompt=args.negative_prompt,

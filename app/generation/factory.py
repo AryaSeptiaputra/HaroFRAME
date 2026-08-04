@@ -6,12 +6,12 @@ from app.identity.instantid.provider import InstantIdProvider
 from app.identity.segmentation.sam_provider import SamGarmentMaskGenerator
 from app.generation.encode.video_writer import ImageioVideoEncoder
 from app.generation.exceptions import NoRendererAvailableError
-from app.generation.interfaces import FrameRenderer
+from app.generation.inpaint.source_editor import InpaintSourceEditor
+from app.generation.interfaces import FrameRenderer, SourceEditor
 from app.generation.lora.interfaces import LoraManager
 from app.generation.lora.manager import PeftLoraManager
 from app.generation.motion.factory import build_frame_warper, build_motion_planner
 from app.generation.pipeline import GenerationPipeline
-from app.generation.renderer.garment_swap_renderer import GarmentSwapFrameRenderer
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
 from app.generation.temporal.factory import build_temporal_smoother
@@ -44,34 +44,30 @@ def build_frame_renderer(
 	return Img2ImgFrameRenderer(identity_engine, identity_config, generation_config.render, lora_manager)
 
 
-def build_garment_renderer(
-	identity_engine: IdentityEngine,
+def build_source_editor(
 	identity_config: IdentityConfig,
 	generation_config: GenerationConfig,
-) -> GarmentSwapFrameRenderer:
-	"""Build the garment-swap renderer. Public for the same reason
-	build_frame_renderer() is (a single-image entry point without motion/video).
+) -> SourceEditor | None:
+	"""Build the stage-1 inpaint source editor, or None when
+	``generation_config.inpaint.enabled`` is off (generation is then the plain
+	single-stage i2i/i2v it always was).
 
-	Restricted to the IP-Adapter/FaceID-SDXL branch -- InstantID's vendored
-	pipeline has no img2img/inpaint entry point at all (it always denoises from
-	pure noise), so garment-swap can't be built on top of it.
+	Takes no IdentityEngine and imposes no face-adapter restriction: stage 1
+	never attaches a face adapter (see InpaintSourceEditor's docstring), so
+	unlike the frame renderers it needs no per-adapter dispatch and works under
+	InstantID as well as the IP-Adapter family.
+
+	Public for the same reason build_frame_renderer() is -- single-image entry
+	points (scripts/generate_image.py) need the same stage-1 edit without going
+	through motion planning or video encoding.
 	"""
-	if identity_engine.face_adapter is None:
-		raise NoRendererAvailableError(
-			"no face adapter configured; enable identity.ipadapter or identity.instantid"
-		)
-	if isinstance(identity_engine.face_adapter, InstantIdProvider):
-		raise NoRendererAvailableError(
-			"garment-swap mode requires the IP-Adapter/FaceID-SDXL branch; InstantID's "
-			"vendored pipeline has no inpaint/img2img entry point"
-		)
+	if not generation_config.inpaint.enabled:
+		return None
 	lora_manager: LoraManager = PeftLoraManager(generation_config.lora, identity_config.cache_dir)
-	mask_generator = SamGarmentMaskGenerator(generation_config.garment, device=identity_config.device)
-	return GarmentSwapFrameRenderer(
-		identity_engine,
+	mask_generator = SamGarmentMaskGenerator(generation_config.inpaint, device=identity_config.device)
+	return InpaintSourceEditor(
 		identity_config,
-		generation_config.garment,
-		generation_config.render,
+		generation_config.inpaint,
 		mask_generator,
 		lora_manager,
 	)
@@ -89,4 +85,5 @@ def build_generation_pipeline(
 		build_frame_renderer(identity_engine, identity_config, generation_config),
 		temporal_smoother=build_temporal_smoother(generation_config.temporal),
 		video_encoder=ImageioVideoEncoder(codec=generation_config.output.codec),
+		source_editor=build_source_editor(identity_config, generation_config),
 	)

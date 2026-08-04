@@ -6,8 +6,12 @@ for manual visual QA -- no video encoding yet (see scripts/generate_video.py
 once app/generation/encode/ exists). Meant to be run by hand on vast.ai against
 real model weights, not as part of the automated pytest suite.
 
+Generation is two-stage by default (generation.inpaint.enabled), but this script
+is about eyeballing per-frame rendering, so --no-inpaint is usually what you
+want here; otherwise supply the stage-1 prompt with --inpaint-prompt.
+
 Usage:
-    python scripts/smoke_test_generation.py ref.jpg "a person smiling" --frames 16 --out outputs/smoke
+    python scripts/smoke_test_generation.py ref.jpg "a person smiling" --frames 16 --no-inpaint --out outputs/smoke
 """
 
 from __future__ import annotations
@@ -18,7 +22,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.core.config import get_settings
+from app.core.config import (
+	INPAINT_PROMPT_REQUIRED_MESSAGE,
+	apply_inpaint_overrides,
+	get_settings,
+	inpaint_prompt_missing,
+)
 from app.identity.exceptions import IdentityModuleError
 from app.identity.factory import build_identity_engine
 from app.identity.interfaces import IdentityReference
@@ -35,6 +44,18 @@ def _parse_args() -> argparse.Namespace:
 	parser.add_argument("--frames", type=int, default=None, help="override GenerationConfig.motion.num_frames")
 	parser.add_argument("--seed", type=int, default=None)
 	parser.add_argument("--out", type=Path, default=Path("outputs/smoke"), help="directory to dump PNG frames into")
+	parser.add_argument(
+		"--inpaint-prompt",
+		type=str,
+		default=None,
+		help="stage-1 prompt: what the masked garment/body region should become "
+		"(default: generation.inpaint.prompt; required unless --no-inpaint)",
+	)
+	parser.add_argument(
+		"--no-inpaint",
+		action="store_true",
+		help="skip stage 1 -- the usual choice here, since this script exists to eyeball per-frame rendering",
+	)
 	return parser.parse_args()
 
 
@@ -49,20 +70,27 @@ def main() -> int:
 		print("FAIL: no face adapter enabled (identity.ipadapter.enabled / identity.instantid.enabled)")
 		return 1
 
-	generation_pipeline = build_generation_pipeline(settings.generation, settings.identity, identity_engine)
+	generation_config = apply_inpaint_overrides(
+		settings.generation, prompt=args.inpaint_prompt, disabled=args.no_inpaint
+	)
+	if inpaint_prompt_missing(generation_config):
+		print(f"FAIL: {INPAINT_PROMPT_REQUIRED_MESSAGE}")
+		return 1
+
+	generation_pipeline = build_generation_pipeline(generation_config, settings.identity, identity_engine)
 
 	reference = IdentityReference(images=[Image.open(args.reference_image).convert("RGB")])
-	motion = settings.generation.motion
+	motion = generation_config.motion
 	spec = CameraMotionSpec(
 		mode=motion.mode,
 		direction=motion.direction,
 		zoom_range=motion.zoom_range,
 		pan_fraction=motion.pan_fraction,
 		easing=motion.easing,
-		num_frames=args.frames if args.frames is not None else settings.generation.output.fps * int(
-			settings.generation.output.duration_seconds
+		num_frames=args.frames if args.frames is not None else generation_config.output.fps * int(
+			generation_config.output.duration_seconds
 		),
-		fps=settings.generation.output.fps,
+		fps=generation_config.output.fps,
 	)
 	request = GenerationRequest(
 		reference=reference,

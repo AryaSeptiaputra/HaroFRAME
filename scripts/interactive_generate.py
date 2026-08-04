@@ -14,8 +14,10 @@ link (model page or direct download), a generic direct-download URL, a local
 path, or a Hugging Face repo_id (checkpoints use snapshot_download for
 repo_ids; LoRAs are left for diffusers to resolve at load time). From there
 you land on a main menu that loops: (a) submit a new job -- pick reference
-photo, write prompt, pick generation mode (image2video/image2image),
-mode-specific overrides, select which installed checkpoint/LoRA(s) to use,
+photo, write prompt, pick generation mode (image2video/image2image), optionally
+turn on the stage-1 inpaint edit (ganti pakaian / generate bagian tubuh, which
+rewrites the photo before the i2i/i2v render works from it), mode-specific
+overrides, select which installed checkpoint/LoRA(s) to use,
 confirm -- the job goes on a queue and control returns to the menu
 immediately (generation itself runs on a background worker thread, one job at
 a time); (b) view queue status (per-job state -- queued/running/done/failed,
@@ -48,7 +50,7 @@ from app.core.config import GenerationConfig, IdentityConfig, LoraConfig, LoraEn
 from app.identity.factory import build_identity_engine
 from app.identity.instantid.provider import InstantIdProvider
 from app.identity.interfaces import IdentityReference
-from app.generation.factory import build_frame_renderer, build_garment_renderer, build_generation_pipeline
+from app.generation.factory import build_frame_renderer, build_generation_pipeline, build_source_editor
 from app.generation.interfaces import CameraMotionSpec, GenerationRequest
 from app.generation.source_resolver import ModelSourceError, resolve_model_source
 
@@ -352,6 +354,9 @@ def _select_loras(installed_loras: list[LoraEntryConfig], default_max: int) -> t
 
 # ---------------------------------------------------------------------------
 # Step 4.5: pick generation mode (image2video vs image2image)
+#
+# Garment/body editing is no longer a third mode -- it's the optional stage-1
+# inpaint pass in front of either of these two (see _prompt_inpaint_stage).
 # ---------------------------------------------------------------------------
 
 
@@ -359,16 +364,66 @@ def _select_generation_mode() -> str:
 	print("\n=== Mode Generate ===")
 	print("[1] Image2Video (animasi, motion dari config)")
 	print("[2] Image2Image (satu gambar hasil, tanpa motion)")
-	print("[3] Garment-Swap (ganti pakaian, SAM-based inpaint)")
 	while True:
 		choice = input("Pilih: ").strip()
 		if choice == "1":
 			return "i2v"
 		if choice == "2":
 			return "i2i"
-		if choice == "3":
-			return "garment"
 		print("  (pilihan tidak dikenal)")
+
+
+def _prompt_inpaint_stage(default_config):
+	"""Ask whether to run the stage-1 inpaint edit, and if so collect its params.
+
+	Returns an InpaintConfig with enabled=True, or None to skip stage 1 entirely.
+	Defaults to on, following InpaintConfig.enabled. Offered for both modes and
+	both face-adapter branches: stage 1 never attaches a face adapter, so
+	InstantID is no longer excluded the way the old Garment-Swap mode excluded it.
+	"""
+	print("\n=== Tahap 1: Inpaint ===")
+	print("Ganti pakaian atau generate bagian tubuh dulu; hasilnya jadi foto sumber")
+	print("untuk tahap i2i/i2v (pose & gaya) berikutnya. Aktif secara default --")
+	print("jawab 'n' kalau mau render satu tahap saja langsung dari foto asli.")
+	if not _prompt_yes_no("Aktifkan tahap inpaint?", default=default_config.enabled):
+		return None
+
+	prompt = _prompt_text(
+		"Deskripsi target area yang di-inpaint (mis. 'sleeveless summer top, light shorts' "
+		"atau 'bare arms')",
+		# _prompt_text loops on empty input when required=True, so only demand one
+		# when config has no default to fall back on -- otherwise Enter accepts it.
+		required=not default_config.prompt,
+		default=default_config.prompt,
+	)
+	strength = _prompt_float(
+		"Inpaint strength (0-1, disarankan 0.7-0.95; rendah = hasil kurang menyatu, tinggi = "
+		"perubahan lebih total tapi risiko tepi mask meleset)",
+		default=default_config.strength,
+	)
+	mask_dilation_px = _prompt_int(
+		"Mask dilation px (disarankan 20-60; naikkan kalau kulit yang baru terbuka masih "
+		"kelihatan sisa baju lama)",
+		default=default_config.mask_dilation_px,
+	)
+	include_arms = _prompt_yes_no("Termasuk area lengan dalam mask?", default=default_config.include_arms_in_mask)
+	include_legs = _prompt_yes_no("Termasuk area kaki dalam mask?", default=default_config.include_legs_in_mask)
+	use_pose_controlnet = _prompt_yes_no(
+		"Pakai pose ControlNet untuk anatomi area baru? (butuh unduh bobot openpose-sdxl)",
+		default=default_config.use_pose_controlnet,
+	)
+
+	return default_config.model_copy(
+		update={
+			"enabled": True,
+			"prompt": prompt,
+			"strength": strength,
+			"mask_dilation_px": mask_dilation_px,
+			"include_arms_in_mask": include_arms,
+			"include_legs_in_mask": include_legs,
+			"use_pose_controlnet": use_pose_controlnet,
+		}
+	)
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +437,7 @@ def _select_generation_mode() -> str:
 @dataclasses.dataclass
 class GenerationJob:
 	job_id: int
-	mode: str  # "i2v", "i2i", or "garment"
+	mode: str  # "i2v" or "i2i"
 	reference_image: Path
 	prompt: str
 	negative_prompt: str
@@ -392,8 +447,6 @@ class GenerationJob:
 	output_path: Path
 	identity_config: IdentityConfig
 	generation_config: GenerationConfig
-	garment_prompt: str | None = None
-	garment_strength_override: float | None = None
 	status: str = "queued"  # queued, running, done, failed
 	current_frame: int = 0
 	total_frames: int = 0
@@ -453,10 +506,8 @@ class GenerationQueueManager:
 				identity_engine = build_identity_engine(job.identity_config)
 				if job.mode == "i2v":
 					self._run_i2v(job, identity_engine)
-				elif job.mode == "i2i":
-					self._run_i2i(job, identity_engine)
 				else:
-					self._run_garment(job, identity_engine)
+					self._run_i2i(job, identity_engine)
 				job.status = "done"
 			except Exception as exc:  # noqa: BLE001 -- report any failure on the job, don't crash the worker
 				job.status = "failed"
@@ -481,7 +532,13 @@ class GenerationQueueManager:
 			fps=output_cfg.fps,
 		)
 		request = GenerationRequest(
-			reference=reference, prompt=job.prompt, negative_prompt=job.negative_prompt, motion=spec, seed=job.seed
+			reference=reference,
+			prompt=job.prompt,
+			negative_prompt=job.negative_prompt,
+			motion=spec,
+			seed=job.seed,
+			# Stage 1 (if enabled) runs inside the pipeline, once, before motion planning.
+			inpaint_prompt=job.generation_config.inpaint.prompt or None,
 		)
 
 		def on_progress(done: int, total: int) -> None:
@@ -493,38 +550,27 @@ class GenerationQueueManager:
 
 	def _run_i2i(self, job: GenerationJob, identity_engine) -> None:
 		renderer = build_frame_renderer(identity_engine, job.identity_config, job.generation_config)
+		source_editor = build_source_editor(job.identity_config, job.generation_config)
 		source_image = Image.open(job.reference_image).convert("RGB")
+		# Identity always comes from the original photo; stage 1 only replaces the
+		# image being transformed. Mirrors GenerationPipeline's ordering for i2v.
 		reference = IdentityReference(images=[source_image])
 		seed = job.seed if job.seed is not None else random.randint(0, _MAX_SEED)
 
 		identity_engine.prepare_reference(reference)
+		render_source = source_image
+		if source_editor is not None:
+			render_source = source_editor.edit(
+				source_image, negative_prompt=job.negative_prompt, seed=seed
+			)
 		rendered = renderer.render(
-			source_image,
+			render_source,
 			reference=reference,
 			prompt=job.prompt,
 			negative_prompt=job.negative_prompt,
 			seed=seed,
 			frame_index=0,
 			strength=job.strength_override,
-		)
-		job.output_path.parent.mkdir(parents=True, exist_ok=True)
-		rendered.image.save(job.output_path)
-		job.result_path = job.output_path
-
-	def _run_garment(self, job: GenerationJob, identity_engine) -> None:
-		renderer = build_garment_renderer(identity_engine, job.identity_config, job.generation_config)
-		source_image = Image.open(job.reference_image).convert("RGB")
-		reference = IdentityReference(images=[source_image])
-		seed = job.seed if job.seed is not None else random.randint(0, _MAX_SEED)
-
-		identity_engine.prepare_reference(reference)
-		rendered = renderer.render_garment_swap(
-			source_image,
-			reference=reference,
-			garment_prompt=job.garment_prompt,
-			negative_prompt=job.negative_prompt,
-			seed=seed,
-			strength=job.garment_strength_override,
 		)
 		job.output_path.parent.mkdir(parents=True, exist_ok=True)
 		rendered.image.save(job.output_path)
@@ -538,29 +584,23 @@ def _configure_job_interactive(
 	installed_loras: list[LoraEntryConfig],
 	is_ipadapter_branch: bool,
 ) -> GenerationJob | None:
-	"""Steps 3-6: photo, prompt, mode, mode-specific overrides, checkpoint/LoRA
-	selection, summary + confirm. Returns a GenerationJob ready to enqueue, or
-	None if the user cancels at the confirmation prompt."""
+	"""Steps 3-6: photo, prompt, mode, optional stage-1 inpaint, mode-specific
+	overrides, checkpoint/LoRA selection, summary + confirm. Returns a
+	GenerationJob ready to enqueue, or None if the user cancels at the
+	confirmation prompt."""
 	reference_image = _choose_reference_image()
 	prompt = _prompt_text("\nPrompt", required=True)
 	negative_prompt = _prompt_text("Negative prompt (opsional)")
 
 	mode = _select_generation_mode()
-	if mode == "garment" and not is_ipadapter_branch:
-		print(
-			"Garment-Swap butuh IP-Adapter/FaceID-SDXL aktif -- InstantID tidak didukung "
-			"(vendored pipeline tidak punya entry point inpaint/img2img)."
-		)
-		return None
+	inpaint_config = _prompt_inpaint_stage(settings.generation.inpaint)
 
 	seed_override = _prompt_optional_int("Seed")
-	garment_prompt = None
-	garment_strength_override = None
 	if mode == "i2v":
 		frames_override = _prompt_optional_int("Jumlah frame")
 		strength_override = None
 		default_output_name = f"{reference_image.stem}.{settings.generation.output.format}"
-	elif mode == "i2i":
+	else:  # i2i
 		frames_override = None
 		strength_override = _prompt_float(
 			"Strength img2img (0-1, disarankan 0.2-0.5; makin tinggi = makin jauh dari foto asli; "
@@ -568,14 +608,6 @@ def _configure_job_interactive(
 			default=settings.generation.render.strength,
 		)
 		default_output_name = f"{reference_image.stem}_img2img.png"
-	else:  # garment
-		frames_override = None
-		strength_override = None
-		garment_prompt = _prompt_text(
-			"Deskripsi pakaian baru (target outfit, mis. 'sleeveless summer top, light shorts')",
-			required=True,
-		)
-		default_output_name = f"{reference_image.stem}_garment.png"
 
 	print("\n--- Parameter Render (opsional, Enter = default dari config) ---")
 	guidance_scale = _prompt_float(
@@ -591,7 +623,7 @@ def _configure_job_interactive(
 	pose_scale = settings.identity.controlnet.pose_conditioning_scale
 	depth_enabled = settings.identity.controlnet.depth_enabled
 	depth_scale = settings.identity.controlnet.depth_conditioning_scale
-	if is_ipadapter_branch and mode != "garment":
+	if is_ipadapter_branch:
 		print("\n--- Structure ControlNet (opsional, khusus IP-Adapter) ---")
 		pose_enabled = _prompt_yes_no("Aktifkan pose ControlNet (DWPose/OpenPose)?", default=pose_enabled)
 		if pose_enabled:
@@ -607,24 +639,6 @@ def _configure_job_interactive(
 				"ketat mengikuti foto asli)",
 				default=depth_scale,
 			)
-
-	garment_inpaint_strength = settings.generation.garment.inpaint_strength
-	garment_mask_dilation_px = settings.generation.garment.mask_dilation_px
-	garment_include_legs = settings.generation.garment.include_legs_in_mask
-	if mode == "garment":
-		print("\n--- Parameter Garment-Swap (opsional, Enter = default dari config) ---")
-		garment_inpaint_strength = _prompt_float(
-			"Inpaint strength (0-1, disarankan 0.7-0.95; rendah = baju baru kurang menyatu, tinggi = "
-			"perubahan lebih total tapi risiko tepi mask meleset)",
-			default=garment_inpaint_strength,
-		)
-		garment_mask_dilation_px = _prompt_int(
-			"Mask dilation px (disarankan 20-60; naikkan kalau kulit yang baru terbuka masih kelihatan "
-			"sisa baju lama)",
-			default=garment_mask_dilation_px,
-		)
-		garment_include_legs = _prompt_yes_no("Termasuk area kaki dalam mask?", default=garment_include_legs)
-		garment_strength_override = garment_inpaint_strength
 
 	output_name = _prompt_text("Nama file output", default=default_output_name)
 
@@ -661,17 +675,18 @@ def _configure_job_interactive(
 			"render": new_render_config,
 		}
 	)
-	if mode == "garment":
-		new_garment_config = settings.generation.garment.model_copy(
-			update={
-				"inpaint_strength": garment_inpaint_strength,
-				"mask_dilation_px": garment_mask_dilation_px,
-				"include_legs_in_mask": garment_include_legs,
-			}
-		)
-		generation_config = generation_config.model_copy(update={"garment": new_garment_config})
+	# Answering "no" has to switch the stage off explicitly -- InpaintConfig.enabled
+	# defaults to True, so inheriting settings.generation.inpaint unchanged would
+	# build a source editor with an empty prompt and fail the job at run time.
+	generation_config = generation_config.model_copy(
+		update={
+			"inpaint": inpaint_config
+			if inpaint_config is not None
+			else settings.generation.inpaint.model_copy(update={"enabled": False})
+		}
+	)
 
-	mode_label = {"i2v": "Image2Video", "i2i": "Image2Image", "garment": "Garment-Swap"}[mode]
+	mode_label = {"i2v": "Image2Video", "i2i": "Image2Image"}[mode]
 	print("\n=== Ringkasan Job ===")
 	print(f"Mode      : {mode_label}")
 	print(f"Base model: {base_model}")
@@ -679,18 +694,22 @@ def _configure_job_interactive(
 	print(f"Prompt    : {prompt}")
 	print(f"Negative  : {negative_prompt or '(kosong)'}")
 	print(f"LoRA aktif: {len(lora_entries)} ({', '.join(e.adapter_name for e in lora_entries) or '-'})")
+	if inpaint_config is None:
+		print("Inpaint   : off")
+	else:
+		print(f"Inpaint   : on -- {inpaint_config.prompt}")
+		print(f"  strength      : {inpaint_config.strength}")
+		print(f"  mask dilation : {inpaint_config.mask_dilation_px} px")
+		print(f"  lengan/kaki   : {'lengan' if inpaint_config.include_arms_in_mask else '-'}"
+			f"{', kaki' if inpaint_config.include_legs_in_mask else ''}")
+		print(f"  pose CN       : {'on' if inpaint_config.use_pose_controlnet else 'off'}")
 	if mode == "i2v":
 		print(f"Frame     : {frames_override if frames_override is not None else 'default dari config'}")
-	elif mode == "i2i":
-		print(f"Strength  : {strength_override}")
 	else:
-		print(f"Outfit    : {garment_prompt}")
-		print(f"Inpaint strength: {garment_inpaint_strength}")
-		print(f"Mask dilation px: {garment_mask_dilation_px}")
-		print(f"Termasuk kaki   : {'ya' if garment_include_legs else 'tidak'}")
+		print(f"Strength  : {strength_override}")
 	print(f"Guidance  : {guidance_scale}")
 	print(f"Steps     : {num_inference_steps}")
-	if is_ipadapter_branch and mode != "garment":
+	if is_ipadapter_branch:
 		print(f"Pose CN   : {'on scale=' + str(pose_scale) if pose_enabled else 'off'}")
 		print(f"Depth CN  : {'on scale=' + str(depth_scale) if depth_enabled else 'off'}")
 	print(f"Output    : outputs/{output_name}")
@@ -714,8 +733,6 @@ def _configure_job_interactive(
 		output_path=output_dir / output_name,
 		identity_config=identity_config,
 		generation_config=generation_config,
-		garment_prompt=garment_prompt,
-		garment_strength_override=garment_strength_override,
 	)
 
 

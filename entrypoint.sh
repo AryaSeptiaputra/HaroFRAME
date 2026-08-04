@@ -12,6 +12,9 @@
 #   python3 scripts/interactive_generate.py
 # See VAST_GUIDE.md for the full walkthrough this automates.
 #
+# Model weights (base SDXL checkpoint, LoRAs, SAM) are prefetched in step 7 from
+# whatever the config says will be used — set HAROFRAME_PREFETCH=false to skip.
+#
 # Secrets are deliberately NOT set here: export
 # HAROFRAME_IDENTITY__HF_TOKEN and (optionally)
 # HAROFRAME_GENERATION__LORA__CIVITAI_API_KEY via vast.ai's own "Environment
@@ -72,13 +75,15 @@ fi
 # already satisfy that constraint -- since step 1 activated the template's
 # venv first, its pre-installed (CUDA-matched) torch build already satisfies
 # >=2.4 and is left untouched; only the project's own deps and onnxruntime-gpu
-# (from the gpu extra) actually get installed/changed here. The optional
-# restoration/garment extras are intentionally NOT installed here (matches
-# the Dockerfile) since they're large and only some setups need them -- see
-# VAST_GUIDE.md's Troubleshooting section for the manual install commands.
-echo "[entrypoint] installing python deps (pip install -e .[gpu])..."
+# (from the gpu extra) actually get installed/changed here. The "garment" extra
+# (segment-anything) IS installed, matching the Dockerfile, because the stage-1
+# inpaint pass is enabled by default (GenerationConfig.inpaint.enabled) and
+# nothing runs without it; its SAM checkpoint is fetched in step 6. The
+# "restoration" extra stays opt-in -- see VAST_GUIDE.md's Troubleshooting
+# section for its manual install command.
+echo "[entrypoint] installing python deps (pip install -e .[gpu,garment])..."
 python3 -m pip install --upgrade pip
-python3 -m pip install -e ".[gpu]"
+python3 -m pip install -e ".[gpu,garment]"
 
 # --- 5. Cache/output directories ---
 # .cache/models is where SDXL base/InstantID/IP-Adapter/LoRA weights get
@@ -110,4 +115,27 @@ elif [ "$IPADAPTER_ON" != "true" ] && [ "$INSTANTID_ON" != "true" ]; then
     echo "[entrypoint]          one before running the pipeline."
 fi
 
-echo "=== [entrypoint] $(date) done — ready for: python3 scripts/generate_video.py <photo> \"<prompt>\" --out outputs/clip.mp4 ==="
+# --- 7. Prefetch model weights ---
+# Pulls the base SDXL checkpoint, every enabled LoRA, and (while stage-1
+# inpainting is enabled) the SAM checkpoint, so the first generate() doesn't
+# stall for tens of GB mid-run. Driven entirely by config — prefetch_models.py
+# chooses nothing itself, it warms whatever HAROFRAME_IDENTITY__BASE_SDXL_MODEL /
+# HAROFRAME_GENERATION__LORA__ENTRIES / HAROFRAME_GENERATION__INPAINT__* already
+# say will be used, and no-ops on anything already cached (so restarts are
+# cheap). Deliberately non-fatal: a download failure leaves a usable instance
+# that just re-downloads lazily at generation time.
+#
+# Set HAROFRAME_PREFETCH=false to skip — e.g. on a metered connection, or when
+# .cache/models is a persistent volume you have already populated.
+if [ "${HAROFRAME_PREFETCH:-true}" = "true" ]; then
+    echo "[entrypoint] prefetching model weights (HAROFRAME_PREFETCH=false to skip)..."
+    if ! python3 scripts/prefetch_models.py; then
+        echo "[entrypoint] WARNING: prefetch did not fully succeed — see the summary above."
+        echo "[entrypoint]          The instance is still usable; missing weights download"
+        echo "[entrypoint]          lazily on first use instead."
+    fi
+else
+    echo "[entrypoint] HAROFRAME_PREFETCH=false — skipping model prefetch."
+fi
+
+echo "=== [entrypoint] $(date) done — ready for: python3 scripts/generate_video.py <photo> \"<prompt>\" --inpaint-prompt \"<outfit>\" --out outputs/clip.mp4 ==="

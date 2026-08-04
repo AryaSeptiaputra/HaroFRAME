@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.config import GenerationConfig, IdentityConfig, InstantIdConfig
+from app.core.config import GenerationConfig, IdentityConfig, InpaintConfig, InstantIdConfig
 from app.generation.exceptions import NoRendererAvailableError
 from app.generation.encode.video_writer import ImageioVideoEncoder
-from app.generation.factory import build_frame_renderer, build_garment_renderer, build_generation_pipeline
+from app.generation.factory import build_frame_renderer, build_generation_pipeline, build_source_editor
+from app.generation.inpaint.source_editor import InpaintSourceEditor
 from app.generation.lora.manager import PeftLoraManager
 from app.generation.pipeline import GenerationPipeline
-from app.generation.renderer.garment_swap_renderer import GarmentSwapFrameRenderer
 from app.generation.renderer.img2img_renderer import Img2ImgFrameRenderer
 from app.generation.renderer.instantid_renderer import InstantIdFrameRenderer
 from app.generation.temporal.passthrough import NullTemporalSmoother
@@ -66,25 +66,51 @@ def test_build_frame_renderer_usable_standalone_for_image2image():
 	assert isinstance(renderer._lora_manager, PeftLoraManager)
 
 
-def test_build_garment_renderer_raises_without_face_adapter():
-	identity_engine = _FakeIdentityEngine(face_adapter=None)
-
-	with pytest.raises(NoRendererAvailableError):
-		build_garment_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+def _inpaint_enabled_config() -> GenerationConfig:
+	return GenerationConfig(inpaint=InpaintConfig(prompt="a red hoodie"))
 
 
-def test_build_garment_renderer_rejects_instantid():
+def _inpaint_disabled_config() -> GenerationConfig:
+	return GenerationConfig(inpaint=InpaintConfig(enabled=False))
+
+
+def test_build_source_editor_returns_none_when_inpaint_disabled():
+	assert build_source_editor(IdentityConfig(), _inpaint_disabled_config()) is None
+
+
+def test_build_source_editor_is_wired_by_default():
+	# InpaintConfig.enabled defaults to True -- a plain GenerationConfig is two-stage.
+	assert isinstance(build_source_editor(IdentityConfig(), GenerationConfig()), InpaintSourceEditor)
+
+
+def test_build_source_editor_wires_sam_mask_generator():
+	editor = build_source_editor(IdentityConfig(), _inpaint_enabled_config())
+
+	assert isinstance(editor, InpaintSourceEditor)
+	assert isinstance(editor._mask_generator, SamGarmentMaskGenerator)
+	assert isinstance(editor._lora_manager, PeftLoraManager)
+
+
+def test_build_source_editor_needs_no_face_adapter_and_allows_instantid():
+	# Stage 1 never attaches a face adapter, so unlike the frame renderers it takes
+	# no IdentityEngine at all and imposes no adapter restriction -- InstantID users
+	# get garment/body editing too.
+	editor = build_source_editor(IdentityConfig(), _inpaint_enabled_config())
+
+	assert isinstance(editor, InpaintSourceEditor)
+
+
+def test_build_generation_pipeline_wires_source_editor_when_inpaint_enabled():
 	identity_engine = _FakeIdentityEngine(face_adapter=InstantIdProvider(InstantIdConfig()))
 
-	with pytest.raises(NoRendererAvailableError):
-		build_garment_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+	pipeline = build_generation_pipeline(_inpaint_enabled_config(), IdentityConfig(), identity_engine)
+
+	assert isinstance(pipeline._source_editor, InpaintSourceEditor)
 
 
-def test_build_garment_renderer_wires_sam_mask_generator():
+def test_build_generation_pipeline_leaves_source_editor_unset_when_inpaint_disabled():
 	identity_engine = _FakeIdentityEngine(face_adapter=object())
 
-	renderer = build_garment_renderer(identity_engine, IdentityConfig(), GenerationConfig())
+	pipeline = build_generation_pipeline(_inpaint_disabled_config(), IdentityConfig(), identity_engine)
 
-	assert isinstance(renderer, GarmentSwapFrameRenderer)
-	assert isinstance(renderer._mask_generator, SamGarmentMaskGenerator)
-	assert isinstance(renderer._lora_manager, PeftLoraManager)
+	assert pipeline._source_editor is None

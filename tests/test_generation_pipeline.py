@@ -45,10 +45,22 @@ class _FakeFrameWarper:
 class _FakeFrameRenderer:
 	def __init__(self):
 		self.render_calls = []
+		self.rendered_sources = []
 
 	def render(self, warped_frame, *, reference, prompt, negative_prompt, seed, frame_index, strength=None):
 		self.render_calls.append(frame_index)
+		self.rendered_sources.append(warped_frame)
 		return RenderedFrame(image=warped_frame, frame_index=frame_index, seed=seed)
+
+
+class _FakeSourceEditor:
+	def __init__(self, edited_image=None):
+		self.calls = []
+		self.edited_image = edited_image or Image.new("RGB", (100, 80), color="red")
+
+	def edit(self, source_image, *, prompt=None, negative_prompt="", seed, strength=None):
+		self.calls.append((source_image, prompt, negative_prompt, seed))
+		return self.edited_image
 
 
 class _FakeTemporalSmoother:
@@ -165,6 +177,68 @@ def test_generate_encodes_video_when_output_path_and_encoder_given(tmp_path):
 
 	assert encoder.encode_calls == [(3, 8, output_path)]
 	assert result.output_path == output_path
+
+
+def test_generate_runs_source_editor_once_for_the_whole_clip():
+	editor = _FakeSourceEditor()
+	renderer = _FakeFrameRenderer()
+	pipeline = GenerationPipeline(
+		_FakeIdentityEngine(),
+		_FakeMotionPlanner(num_frames=4),
+		_FakeFrameWarper(),
+		renderer,
+		source_editor=editor,
+	)
+
+	pipeline.generate(GenerationRequest(reference=_reference(), prompt="x", inpaint_prompt="a red hoodie"))
+
+	assert len(editor.calls) == 1
+	assert editor.calls[0][1] == "a red hoodie"
+	# every frame is rendered from the edited photo, not the original
+	assert renderer.rendered_sources == [editor.edited_image] * 4
+
+
+def test_generate_keeps_identity_reference_on_the_unedited_photo():
+	# The face adapter must keep conditioning on the original photo -- stage 1 only
+	# replaces the image being transformed.
+	identity_engine = _FakeIdentityEngine()
+	reference = _reference()
+	original_image = reference.images[0]
+	pipeline = GenerationPipeline(
+		identity_engine,
+		_FakeMotionPlanner(),
+		_FakeFrameWarper(),
+		_FakeFrameRenderer(),
+		source_editor=_FakeSourceEditor(),
+	)
+
+	pipeline.generate(GenerationRequest(reference=reference, prompt="x", inpaint_prompt="p"))
+
+	assert identity_engine.prepare_reference_calls == 1
+	assert reference.images == [original_image]
+
+
+def test_generate_shares_one_seed_between_source_edit_and_frames():
+	editor = _FakeSourceEditor()
+	pipeline = GenerationPipeline(
+		_FakeIdentityEngine(), _FakeMotionPlanner(num_frames=2), _FakeFrameWarper(), _FakeFrameRenderer(),
+		source_editor=editor,
+	)
+
+	result = pipeline.generate(GenerationRequest(reference=_reference(), prompt="x", inpaint_prompt="p", seed=77))
+
+	assert editor.calls[0][3] == 77
+	assert [frame.seed for frame in result.frames] == [77, 77]
+
+
+def test_generate_renders_from_original_photo_without_source_editor():
+	reference = _reference()
+	renderer = _FakeFrameRenderer()
+	pipeline = GenerationPipeline(_FakeIdentityEngine(), _FakeMotionPlanner(num_frames=2), _FakeFrameWarper(), renderer)
+
+	pipeline.generate(GenerationRequest(reference=reference, prompt="x", inpaint_prompt="ignored"))
+
+	assert renderer.rendered_sources == [reference.images[0]] * 2
 
 
 def test_generate_skips_encoding_without_encoder(tmp_path):

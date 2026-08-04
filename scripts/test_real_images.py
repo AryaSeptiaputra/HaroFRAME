@@ -7,8 +7,14 @@ video file per image. Needs actual model weights and a GPU -- run this on
 vast.ai (see VAST_GUIDE.md), not on the local dev machine. A failure on one image
 is reported but does not stop the rest of the batch.
 
+Generation is two-stage by default (generation.inpaint.enabled). The .txt
+sidecar / --prompt is the stage-2 prompt and varies per image; --inpaint-prompt
+is the stage-1 prompt and applies to the whole batch. Pass --no-inpaint for
+single-stage runs.
+
 Usage:
-    python scripts/test_real_images.py [--dir test_images] [--prompt "a person, natural lighting"] [--out outputs/test_real_images]
+    python scripts/test_real_images.py [--dir test_images] [--prompt "a person, natural lighting"] --no-inpaint
+    python scripts/test_real_images.py --inpaint-prompt "a plain white t-shirt" [--out outputs/test_real_images]
 """
 
 from __future__ import annotations
@@ -20,7 +26,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.core.config import get_settings
+from app.core.config import (
+	INPAINT_PROMPT_REQUIRED_MESSAGE,
+	apply_inpaint_overrides,
+	get_settings,
+	inpaint_prompt_missing,
+)
 from app.identity.exceptions import IdentityModuleError
 from app.identity.factory import build_identity_engine
 from app.identity.interfaces import IdentityReference
@@ -55,6 +66,18 @@ def _parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--out", type=Path, default=Path("outputs/test_real_images"), help="directory to write output videos into"
 	)
+	parser.add_argument(
+		"--inpaint-prompt",
+		type=str,
+		default=None,
+		help="stage-1 prompt applied to every image in the batch: what the masked garment/body "
+		"region should become (default: generation.inpaint.prompt; required unless --no-inpaint)",
+	)
+	parser.add_argument(
+		"--no-inpaint",
+		action="store_true",
+		help="skip stage 1 for the whole batch and animate straight from each photo",
+	)
 	return parser.parse_args()
 
 
@@ -86,10 +109,17 @@ def main() -> int:
 	if identity_engine.face_adapter is None:
 		print("FAIL: no face adapter enabled (identity.ipadapter.enabled / identity.instantid.enabled)")
 		return 1
-	generation_pipeline = build_generation_pipeline(settings.generation, settings.identity, identity_engine)
+	generation_config = apply_inpaint_overrides(
+		settings.generation, prompt=args.inpaint_prompt, disabled=args.no_inpaint
+	)
+	if inpaint_prompt_missing(generation_config):
+		print(f"FAIL: {INPAINT_PROMPT_REQUIRED_MESSAGE}")
+		return 1
 
-	output_cfg = settings.generation.output
-	motion_cfg = settings.generation.motion
+	generation_pipeline = build_generation_pipeline(generation_config, settings.identity, identity_engine)
+
+	output_cfg = generation_config.output
+	motion_cfg = generation_config.motion
 	args.out.mkdir(parents=True, exist_ok=True)
 
 	results: list[_BatchResult] = []

@@ -4,7 +4,16 @@ import pytest
 
 from pydantic import ValidationError
 
-from app.core.config import GenerationConfig, IdentityConfig, LoraConfig, LoraEntryConfig, Settings, get_settings
+from app.core.config import (
+	GenerationConfig,
+	IdentityConfig,
+	LoraConfig,
+	LoraEntryConfig,
+	Settings,
+	apply_inpaint_overrides,
+	get_settings,
+	inpaint_prompt_missing,
+)
 
 
 def test_identity_config_defaults():
@@ -33,26 +42,57 @@ def test_generation_config_defaults():
 	assert config.seed is None
 
 
-def test_garment_swap_config_defaults():
-	config = GenerationConfig().garment
+def test_inpaint_config_defaults():
+	config = GenerationConfig().inpaint
 
+	# On by default: a generation is two stages, hence two prompts, unless turned off.
+	assert config.enabled is True
+	assert config.prompt == ""
 	assert config.sam.model_type == "vit_b"
 	assert config.mask_dilation_px == 40
 	assert config.mask_feather_px == 8
 	assert config.include_arms_in_mask is True
 	assert config.include_legs_in_mask is False
-	assert config.inpaint_strength == pytest.approx(0.85)
+	assert config.strength == pytest.approx(0.85)
 	assert config.use_pose_controlnet is True
 
 
-def test_settings_garment_env_override(monkeypatch):
-	monkeypatch.setenv("HAROFRAME_GENERATION__GARMENT__MASK_DILATION_PX", "80")
-	monkeypatch.setenv("HAROFRAME_GENERATION__GARMENT__SAM__MODEL_TYPE", "vit_h")
+def test_settings_inpaint_env_override(monkeypatch):
+	monkeypatch.setenv("HAROFRAME_GENERATION__INPAINT__ENABLED", "false")
+	monkeypatch.setenv("HAROFRAME_GENERATION__INPAINT__MASK_DILATION_PX", "80")
+	monkeypatch.setenv("HAROFRAME_GENERATION__INPAINT__SAM__MODEL_TYPE", "vit_h")
 
 	settings = Settings()
 
-	assert settings.generation.garment.mask_dilation_px == 80
-	assert settings.generation.garment.sam.model_type == "vit_h"
+	assert settings.generation.inpaint.enabled is False
+	assert settings.generation.inpaint.mask_dilation_px == 80
+	assert settings.generation.inpaint.sam.model_type == "vit_h"
+
+
+def test_apply_inpaint_overrides_returns_input_untouched_without_flags():
+	config = GenerationConfig()
+
+	assert apply_inpaint_overrides(config) is config
+
+
+def test_apply_inpaint_overrides_sets_prompt():
+	resolved = apply_inpaint_overrides(GenerationConfig(), prompt="a red hoodie")
+
+	assert resolved.inpaint.prompt == "a red hoodie"
+	assert resolved.inpaint.enabled is True
+
+
+def test_apply_inpaint_overrides_disables_stage():
+	resolved = apply_inpaint_overrides(GenerationConfig(), disabled=True)
+
+	assert resolved.inpaint.enabled is False
+
+
+def test_inpaint_prompt_missing_flags_enabled_stage_without_a_prompt():
+	# The default config is exactly this case -- entry points must catch it up front.
+	assert inpaint_prompt_missing(GenerationConfig()) is True
+	assert inpaint_prompt_missing(apply_inpaint_overrides(GenerationConfig(), prompt="p")) is False
+	assert inpaint_prompt_missing(apply_inpaint_overrides(GenerationConfig(), disabled=True)) is False
 
 
 def test_lora_entry_config_rejects_reserved_adapter_name():

@@ -17,5 +17,9 @@ class FrameRenderError(GenerationModuleError):
 	"""Raised when a FrameRenderer fails to render a frame."""
 
 
+class SourceEditError(GenerationModuleError):
+	"""Raised when the stage-1 SourceEditor cannot edit the source photo."""
+
+
 class VideoEncodeError(GenerationModuleError):
 	"""Raised when a VideoEncoder fails to mux frames into an output file."""

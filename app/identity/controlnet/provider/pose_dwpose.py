@@ -57,7 +57,7 @@ class DwPoseConditioner:
 
 	def detect_body_keypoints(self, image: Image.Image) -> BodyKeypoints:
 		"""Return normalized 18-point body keypoints for the most confident detected
-		person, used by garment-swap SAM prompt derivation
+		person, used by SAM prompt derivation for the stage-1 garment/body mask
 		(app/identity/segmentation/) -- unrelated to preprocess()/build_control()
 		above, which stay on the detector's normal rendered-skeleton path.
 
@@ -78,7 +78,7 @@ class DwPoseConditioner:
 		if hasattr(detector, "detect_poses"):
 			poses = detector.detect_poses(rgb)
 			if not poses:
-				raise ModelLoadError("no person detected for garment-swap keypoint extraction")
+				raise ModelLoadError("no person detected for garment/body mask keypoint extraction")
 			best = max(poses, key=lambda pose: pose.body.total_score)
 			points = np.full((18, 2), -1.0, dtype=np.float32)
 			scores = np.full((18,), -1.0, dtype=np.float32)
@@ -91,7 +91,7 @@ class DwPoseConditioner:
 		if hasattr(detector, "pose_estimation"):
 			candidate, subset = detector.pose_estimation(rgb[:, :, ::-1])
 			if candidate.shape[0] == 0:
-				raise ModelLoadError("no person detected for garment-swap keypoint extraction")
+				raise ModelLoadError("no person detected for garment/body mask keypoint extraction")
 			best_index = int(np.argmax(np.clip(subset[:, :18], 0, None).sum(axis=1)))
 			points = candidate[best_index, :18, :2].astype(np.float32).copy()
 			points[:, 0] /= float(width)
