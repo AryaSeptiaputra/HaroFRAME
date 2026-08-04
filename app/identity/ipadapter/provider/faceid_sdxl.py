@@ -37,8 +37,16 @@ class FaceIdSdxlProvider:
 			)
 		pipeline.load_ip_adapter(
 			self._config.repo_id,
-			subfolder=self._config.subfolder,
+			# "" not None: diffusers builds the CLIP path as
+			# Path(subfolder, image_encoder_folder), which raises TypeError on None.
+			subfolder=self._config.subfolder or "",
 			weight_name=self._config.weight_name,
+			# FaceID has no image encoder -- it conditions on the ArcFace vector that
+			# build_conditioning() passes as ip_adapter_image_embeds, and
+			# h94/IP-Adapter-FaceID ships no image_encoder/ folder to load one from.
+			# None is diffusers' documented way to skip it (it warns that
+			# ip_adapter_image is then unavailable, which is exactly right here).
+			image_encoder_folder=None,
 		)
 		if self._config.lora_weight_name:
 			# adapter_name is pinned so app/generation/lora's PeftLoraManager can
