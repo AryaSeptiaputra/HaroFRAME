@@ -6,6 +6,23 @@ from app.core.config import LoraConfig, LoraEntryConfig
 from app.generation.lora.manager import PeftLoraManager
 
 
+def test_peft_backend_is_available():
+	"""Every other test here drives a fake pipeline, so none of them notices when
+	peft is missing from the environment -- diffusers then refuses the real
+	load_lora_weights() with "PEFT backend is required for this method." at
+	runtime, on a rented GPU, after the model weights have already loaded.
+
+	This fails locally instead, and covers the FaceID companion LoRA too, which
+	is attached on every run of the default adapter branch.
+	"""
+	from diffusers.utils import USE_PEFT_BACKEND
+
+	assert USE_PEFT_BACKEND, (
+		"diffusers' PEFT backend is inactive -- peft is missing or older than "
+		"diffusers' MIN_PEFT_VERSION. Reinstall the project: pip install -e '.[gpu]'"
+	)
+
+
 class _FakePipeline:
 	def __init__(self, existing_adapters=None):
 		self.load_lora_weights_calls = []

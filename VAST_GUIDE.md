@@ -434,6 +434,10 @@ docker compose down
 - **`ModelLoadError: gfpgan (and its basicsr/facexlib dependencies) are not
   installed`** -- disengaja, extra `restoration` tidak diinstal otomatis.
   Install manual: `pip install -e ".[restoration]"`.
+- **`ValueError: PEFT backend is required for this method.`** -- `peft` belum
+  terpasang (atau lebih tua dari `MIN_PEFT_VERSION` milik diffusers). Sekarang
+  sudah jadi dependensi inti, jadi cukup pasang ulang:
+  `python3 -m pip install -e ".[gpu,garment]"`.
 - **`AttributeError: module 'mediapipe' has no attribute 'solutions'`** (atau
   `ModelLoadError: could not import a pose detector from controlnet_aux ...`) --
   `mediapipe` terpasang di instance tapi rusak/tidak lengkap. `controlnet_aux`
