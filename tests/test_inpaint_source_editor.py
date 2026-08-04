@@ -242,3 +242,24 @@ def test_release_is_safe_before_anything_was_built(mocker):
 	editor, _, _ = _editor(mocker, config)
 
 	editor.release()  # must not raise
+
+
+def test_edit_skips_the_upscale_back_when_preserve_size_is_off(mocker):
+	# Single-image callers hand the result straight to a renderer that would
+	# downscale it to this same grid again -- the round trip is pure loss.
+	config = InpaintConfig(enabled=True, prompt="p", use_pose_controlnet=False)
+	editor, _, _ = _editor(mocker, config, output_image=Image.new("RGB", (880, 1176)))
+
+	result = editor.edit(Image.new("RGB", (1829, 2438)), seed=1, preserve_size=False)
+
+	assert result.size == (880, 1176)
+
+
+def test_edit_still_restores_source_size_by_default(mocker):
+	# i2v depends on it: the face bbox is in the original photo's pixel coords.
+	config = InpaintConfig(enabled=True, prompt="p", use_pose_controlnet=False)
+	editor, _, _ = _editor(mocker, config, output_image=Image.new("RGB", (880, 1176)))
+
+	result = editor.edit(Image.new("RGB", (1829, 2438)), seed=1)
+
+	assert result.size == (1829, 2438)

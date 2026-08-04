@@ -83,6 +83,12 @@ def _parse_args() -> argparse.Namespace:
 		action="store_true",
 		help="skip stage 1 and render straight from the photo (single-stage, no SAM checkpoint needed)",
 	)
+	parser.add_argument(
+		"--save-stage1",
+		type=Path,
+		default=None,
+		help="also write the stage-1 result here -- the way to tell which stage introduced an artefact",
+	)
 	return parser.parse_args()
 
 
@@ -156,7 +162,13 @@ def main() -> int:
 		render_source = source_image
 		if source_editor is not None:
 			print("stage 1/2: inpainting garment/body region ...")
-			render_source = source_editor.edit(source_image, negative_prompt=args.negative, seed=seed)
+			render_source = source_editor.edit(
+				source_image, negative_prompt=args.negative, seed=seed, preserve_size=False
+			)
+			if args.save_stage1 is not None:
+				args.save_stage1.parent.mkdir(parents=True, exist_ok=True)
+				render_source.save(args.save_stage1)
+				print(f"           stage-1 result -> {args.save_stage1}")
 			# Free stage 1's pipeline before stage 2 builds its own; both at once
 			# does not fit on a 24GB card.
 			source_editor.release()

@@ -108,8 +108,10 @@ class SourceEditor(Protocol):
 	source. Running once rather than per frame is both far cheaper and the only
 	way the edit stays consistent across a clip.
 
-	Returns an image the same size as ``source_image`` -- callers rely on that
-	to keep an already-computed face bbox and motion plan valid.
+	With ``preserve_size`` (the default) the result is the same size as
+	``source_image``, which video callers rely on to keep an already-computed
+	face bbox and motion plan valid. Single-image callers pass False to skip a
+	pointless enlarge-then-shrink round trip around the stage-2 render.
 	"""
 
 	def edit(
@@ -120,6 +122,7 @@ class SourceEditor(Protocol):
 		negative_prompt: str = "",
 		seed: int,
 		strength: float | None = None,
+		preserve_size: bool = True,
 	) -> Image.Image:
 		...
 

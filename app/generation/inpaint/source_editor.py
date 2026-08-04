@@ -105,6 +105,7 @@ class InpaintSourceEditor:
 		negative_prompt: str = "",
 		seed: int,
 		strength: float | None = None,
+		preserve_size: bool = True,
 	) -> Image.Image:
 		effective_prompt = prompt if prompt else self._config.prompt
 		if not effective_prompt:
@@ -139,11 +140,16 @@ class InpaintSourceEditor:
 			call_kwargs["controlnet_conditioning_scale"] = self._config.pose_conditioning_scale
 
 		edited = pipeline(**call_kwargs).images[0]
-		# Stage 1 renders at the SDXL-sized grid above, so for a large photo this
-		# scales back up. Restoring the exact source size is not cosmetic: the
-		# caller's face bbox (pixel coords from the original) and motion plan both
-		# assume it.
-		if edited.size != source_image.size:
+		# Stage 1 renders at the SDXL-sized grid above, so for a large photo
+		# restoring the source size means scaling back *up*. i2v needs that: its
+		# face bbox is in the original photo's pixel coordinates and the motion
+		# plan plus every warp assume that size.
+		#
+		# Single-image callers need no such thing, and for them the round trip is
+		# pure loss -- upscale here, then the renderer immediately downscales to
+		# the same grid this came off, so a 2x LANCZOS enlargement and reduction
+		# sandwich the render for nothing. Those callers pass preserve_size=False.
+		if preserve_size and edited.size != source_image.size:
 			edited = edited.resize(source_image.size, Image.LANCZOS)
 		return edited
 
